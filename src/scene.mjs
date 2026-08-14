@@ -34,11 +34,20 @@ export const DEFAULT_SCENES = {
     periodMs: 2600,
     minBrightness: 25
   },
-  // Agent is churning: calm steady blue.
+  // Agent is churning: calm blue, breathing slowly.
+  //
+  // Deliberately animated even though nothing needs attention: `working` is
+  // the state you are in most of the time, and a steady colour there makes a
+  // healthy light indistinguishable from a broken one. The range is narrow and
+  // the period long so it reads as "alive" rather than "look at me" — the
+  // sharper pulse of `blocked` and shorter breath of `waiting` still stand out
+  // against it.
   working: {
     color: '#1e6bff',
-    brightness: 70,
-    effect: 'solid'
+    brightness: 75,
+    effect: 'breathe',
+    periodMs: 4000,
+    minBrightness: 45
   },
   // Finished: green, held briefly, then the light returns to idle.
   done: {

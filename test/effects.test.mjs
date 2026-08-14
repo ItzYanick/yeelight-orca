@@ -183,8 +183,9 @@ describe('multiple projects', () => {
     const one = new AgentStatusTracker();
     one.update({ paneKey: 'a', state: 'working', worktreeId: 'r1::/w/solo', receivedAt: T0 });
     const single = resolveProjectCycleScene(one.projects(T0));
-    assert.equal(single.flow, undefined, 'a single project should not cycle');
-    assert.equal(single.color, DEFAULT_SCENES.working.color);
+    // It must be the plain single-status scene, not a multi-project cycle.
+    assert.deepEqual(single, resolveScene('working'));
+    assert.equal(single.projects, undefined, 'a single project should not cycle');
 
     assert.deepEqual(resolveProjectCycleScene([]), { status: 'idle', power: 'off' });
   });

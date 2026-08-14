@@ -118,6 +118,18 @@ function lastScene(received) {
   return [...received].reverse().find((message) => message.method === 'set_scene');
 }
 
+/**
+ * Whether a scene displays a colour, in either form: `set_scene ["color", rgb,
+ * bright]` for a solid scene or `set_scene ["cf", ...]` for an animated one.
+ * Tests assert on what the light *shows*, not on which form it took.
+ */
+function showsColor(scene, hex) {
+  const rgb = toRgbInt(hex);
+  return scene.params[0] === 'color'
+    ? scene.params[1] === rgb
+    : new RegExp(`,1,${rgb},`).test(scene.params[3]);
+}
+
 describe('per-project light assignment', () => {
   /**
    * Two lights, two projects, one assignment: the assigned light must follow
@@ -159,10 +171,13 @@ describe('per-project light assignment', () => {
     await settle();
 
     try {
-      // The assigned light shows alpha's own status: steady blue, no flow.
+      // The assigned light shows alpha's own status and nothing else.
       const assigned = lastScene(alpha.received);
-      assert.equal(assigned.params[0], 'color');
-      assert.equal(assigned.params[1], toRgbInt(DEFAULT_SCENES.working.color));
+      assert.ok(showsColor(assigned, DEFAULT_SCENES.working.color), 'alpha is working');
+      assert.ok(
+        !showsColor(assigned, DEFAULT_SCENES.blocked.color),
+        'an assigned light must ignore other projects'
+      );
 
       // The unassigned light cycles both projects, so it must be a flow that
       // contains beta's blocked red -- which the assigned light never shows.
@@ -178,6 +193,58 @@ describe('per-project light assignment', () => {
       controller.stop();
       await alpha.close();
       await beta.close();
+    }
+  });
+});
+
+describe('overlapping writes', () => {
+  /**
+   * A scene change that arrives while the connection is still opening must
+   * supersede the one being flushed — never land before it.
+   *
+   * Without serialisation the stale scene reaches the device last while
+   * `#appliedFingerprint` records the newer one, so the light sticks (usually
+   * off) and no later status change can recover it.
+   */
+  it('never lets a superseded scene reach the device last', async () => {
+    const bulb = await startFakeBulb();
+    const { YeelightDevice } = await import('../src/device.mjs');
+
+    const device = new YeelightDevice({
+      id: 'slow',
+      host: '127.0.0.1',
+      port: bulb.port,
+      support: ['set_scene']
+    });
+
+    // Delay the connection so the first flush is still awaiting it when the
+    // second scene arrives — the exact window the race needs.
+    const realConnect = device.connect.bind(device);
+    device.connect = () =>
+      new Promise((resolve, reject) => {
+        setTimeout(() => realConnect().then(resolve, reject), 500);
+      });
+
+    try {
+      device.setScene({ status: 'idle', power: 'off' });
+      setTimeout(() => {
+        device.setScene({ status: 'working', power: 'on', color: '#1e6bff', brightness: 70 });
+      }, 400);
+
+      await settle(2000);
+
+      const last = bulb.received.at(-1);
+      assert.ok(last, 'the device should have received something');
+      assert.equal(last.method, 'set_scene', 'the colour must land last, not the power-off');
+      assert.equal(last.params[1], toRgbInt('#1e6bff'));
+
+      const powerOffs = bulb.received.filter(
+        (message) => message.method === 'set_power' && message.params[0] === 'off'
+      );
+      assert.equal(powerOffs.length, 0, 'the superseded off should never be sent at all');
+    } finally {
+      device.close();
+      await bulb.close();
     }
   });
 });
@@ -296,8 +363,7 @@ describe('plugin activate()', () => {
     await settle();
 
     const scene = lastScene(bulb.received);
-    assert.equal(scene.params[0], 'color');
-    assert.equal(scene.params[1], toRgbInt(DEFAULT_SCENES.working.color));
+    assert.ok(showsColor(scene, DEFAULT_SCENES.working.color), 'should show the working colour');
   });
 
   it('escalates to a red flow when any agent is blocked', async () => {
@@ -319,8 +385,8 @@ describe('plugin activate()', () => {
     await settle();
 
     const scene = lastScene(bulb.received);
-    assert.equal(scene.params[0], 'color');
-    assert.equal(scene.params[1], toRgbInt(DEFAULT_SCENES.working.color));
+    assert.ok(showsColor(scene, DEFAULT_SCENES.working.color), 'should fall back to working');
+    assert.ok(!showsColor(scene, DEFAULT_SCENES.blocked.color), 'the removed project must be gone');
   });
 
   it('coalesces a burst of events into a single write', async () => {

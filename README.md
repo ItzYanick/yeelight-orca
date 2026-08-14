@@ -7,7 +7,7 @@ display for your coding agents.
 | --- | --- | --- |
 | 🔴 red, pulsing | `blocked` | an agent is stuck and needs you |
 | 🟠 amber, breathing | `waiting` | an agent is asking a question |
-| 🔵 blue, steady | `working` | an agent is running |
+| 🔵 blue, breathing slowly | `working` | an agent is running |
 | 🟢 green, steady | `done` | finished in the last 90 seconds |
 | ⚫ off | idle | nothing is running |
 
@@ -29,6 +29,12 @@ Two quirks of that model, both handled:
   answers a query, with neither a result nor an error. Only the CLI's `props`
   command reads properties, and it reports this distinctly instead of claiming
   the light is unreachable. The status sync never queries, so it is unaffected.
+
+**This model has no readable state at all.** `get_prop` times out, the SSDP
+advert is frozen (it reports `rgb=16777215` and `power=on` no matter what the
+light is actually doing), and it sends no unsolicited notifications. Colour
+flows do work, including brightness-only ones. If you are debugging one of
+these, budget for the fact that the only way to observe it is to look at it.
 
 ## Requirements
 

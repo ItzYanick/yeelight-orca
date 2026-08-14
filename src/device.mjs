@@ -37,6 +37,7 @@ export class YeelightDevice {
   #closed = false;
 
   #writeTimer = null;
+  #flushing = false;
   #desiredScene = null;
   #appliedFingerprint = null;
   #writeBudget = [];
@@ -217,34 +218,60 @@ export class YeelightDevice {
     for (let i = 0; i < cost; i++) this.#writeBudget.push(now);
   }
 
+  /**
+   * Applies the newest desired scene, one flush at a time.
+   *
+   * Serialised deliberately. `connect()` and every `send()` are awaited, so two
+   * overlapping flushes can interleave and let an *older* scene reach the
+   * device last — while `#appliedFingerprint` records the newer one, so nothing
+   * ever corrects it. The visible result is a light stuck on a stale scene,
+   * usually "off", that no later status change can recover.
+   *
+   * The loop re-reads `#desiredScene` after every await, so a scene that
+   * changes mid-connect is superseded rather than sent and then overwritten.
+   */
   async #flush() {
-    const scene = this.#desiredScene;
-    if (!scene) return;
+    if (this.#flushing) return;
+    this.#flushing = true;
 
-    const fingerprint = sceneFingerprint(scene);
-    if (fingerprint === this.#appliedFingerprint) return;
+    try {
+      while (!this.#closed) {
+        const scene = this.#desiredScene;
+        if (!scene) return;
 
-    if (!this.connected) {
-      await this.connect();
+        const fingerprint = sceneFingerprint(scene);
+        if (fingerprint === this.#appliedFingerprint) return;
+
+        if (!this.connected) {
+          await this.connect();
+          // A newer scene may have landed while the connection was opening.
+          if (this.#desiredScene !== scene) continue;
+        }
+
+        const commands = sceneToCommands(scene, {
+          support: this.support,
+          transitionMs: this.transitionMs
+        });
+
+        if (!this.#hasWriteBudget(commands.length)) {
+          // Retry once the sliding window has room rather than dropping the scene.
+          this.log(`rate limit reached for ${this.label}; deferring scene`);
+          setTimeout(() => this.#scheduleWrite(), 5000).unref?.();
+          return;
+        }
+
+        this.#spendWriteBudget(commands.length);
+        for (const command of commands) {
+          await this.send(command.method, command.params);
+        }
+        this.#appliedFingerprint = fingerprint;
+
+        // Anything newer that arrived mid-write gets its own pass.
+        if (this.#desiredScene === scene) return;
+      }
+    } finally {
+      this.#flushing = false;
     }
-
-    const commands = sceneToCommands(scene, {
-      support: this.support,
-      transitionMs: this.transitionMs
-    });
-
-    if (!this.#hasWriteBudget(commands.length)) {
-      // Retry once the sliding window has room rather than dropping the scene.
-      this.log(`rate limit reached for ${this.label}; deferring scene`);
-      setTimeout(() => this.#scheduleWrite(), 5000).unref?.();
-      return;
-    }
-
-    this.#spendWriteBudget(commands.length);
-    for (const command of commands) {
-      await this.send(command.method, command.params);
-    }
-    this.#appliedFingerprint = fingerprint;
   }
 
   /**

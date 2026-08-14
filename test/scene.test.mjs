@@ -78,11 +78,27 @@ describe('resolveScene', () => {
     assert.deepEqual(resolveScene('idle'), { status: 'idle', power: 'off' });
   });
 
-  it('produces a solid scene for working', () => {
+  it('produces a solid scene for done', () => {
+    const scene = resolveScene('done');
+    assert.equal(scene.power, 'on');
+    assert.equal(scene.color, DEFAULT_SCENES.done.color);
+    assert.equal(scene.flow, undefined);
+  });
+
+  it('breathes for working, so a healthy light never looks dead', () => {
     const scene = resolveScene('working');
     assert.equal(scene.power, 'on');
     assert.equal(scene.color, DEFAULT_SCENES.working.color);
-    assert.equal(scene.flow, undefined);
+    assert.ok(scene.flow, 'working is the most common state and must look alive');
+    // Calmer than the attention-seeking statuses it has to sit alongside.
+    assert.ok(
+      DEFAULT_SCENES.working.periodMs > DEFAULT_SCENES.waiting.periodMs,
+      'working should breathe more slowly than waiting'
+    );
+    assert.ok(
+      DEFAULT_SCENES.working.minBrightness > DEFAULT_SCENES.waiting.minBrightness,
+      'working should have a shallower swing than waiting'
+    );
   });
 
   it('produces a repeating flow for breathing and pulsing statuses', () => {
