@@ -19,14 +19,13 @@ import { decodeMessages, toRgbInt } from '../src/protocol.mjs';
 import { DEFAULT_SCENES } from '../src/scene.mjs';
 
 /**
- * `src/config.mjs` resolves CONFIG_PATH once, when it is first imported. The
- * override therefore has to be in place before *any* test pulls that module
- * in -- otherwise a later suite silently runs against the developer's real
- * ~/.orca/yeelight.json and tries to reach real lights.
+ * Sandboxed by `test/setup.mjs`, which `npm test` loads via `--import` before
+ * any module here is evaluated. See that file for why the override cannot
+ * live in this one.
  */
-const CONFIG_DIR = fsSync.mkdtempSync(path.join(os.tmpdir(), 'yeelight-orca-'));
-const TEST_CONFIG_PATH = path.join(CONFIG_DIR, 'yeelight.json');
-process.env.ORCA_YEELIGHT_CONFIG = TEST_CONFIG_PATH;
+const TEST_CONFIG_PATH = process.env.ORCA_YEELIGHT_CONFIG;
+assert.ok(TEST_CONFIG_PATH, 'run via `npm test` so the config path is sandboxed');
+fsSync.mkdirSync(path.dirname(TEST_CONFIG_PATH), { recursive: true });
 
 /** Minimal Yeelight that records commands and acknowledges each one. */
 function startFakeBulb() {

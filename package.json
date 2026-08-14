@@ -8,7 +8,7 @@
     "orca-yeelight": "bin/orca-yeelight.mjs"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --import ./test/setup.mjs --test \"test/*.test.mjs\"",
     "discover": "node bin/orca-yeelight.mjs discover",
     "demo": "node bin/orca-yeelight.mjs demo"
   },
