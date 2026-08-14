@@ -160,10 +160,17 @@ export function hsvToHex(hue, saturation = 1, value = 1) {
   return `#${channel(r)}${channel(g)}${channel(b)}`;
 }
 
-/** Evenly spaced hues around the wheel. */
-export function rainbowPalette(count = 6) {
+/**
+ * Evenly spaced hues around the wheel.
+ *
+ * `offsetDeg` rotates the starting hue. That is what lets several lights run
+ * the same sweep a fraction of a turn apart, so they read as one rainbow
+ * spanning the room rather than three synchronised copies of the same one.
+ */
+export function rainbowPalette(count = 6, offsetDeg = 0) {
   const size = Math.min(8, Math.max(2, Math.round(count)));
-  return Array.from({ length: size }, (_, index) => hsvToHex((index * 360) / size));
+  const offset = Number.isFinite(offsetDeg) ? offsetDeg : 0;
+  return Array.from({ length: size }, (_, index) => hsvToHex(offset + (index * 360) / size));
 }
 
 /**

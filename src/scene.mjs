@@ -61,6 +61,30 @@ export const DEFAULT_SCENES = {
   }
 };
 
+/**
+ * Hearts mode: the room shows one heart per agent instead of one colour per
+ * project. Three is the whole design — it is the largest set you can count
+ * without counting, so "two blue, one rainbow" lands as a fact rather than a
+ * puzzle.
+ */
+export const HEART_COUNT = 3;
+
+/** What a heart can say, most urgent first. */
+export const HEART_STATES = ['attention', 'working', 'idle'];
+
+export const HEART_TIMING = {
+  /** Blue pulse: alive, but in no hurry. */
+  workingPeriodMs: 2400,
+  /** Yellow pulse: twice the rate, so "answer me" cannot be mistaken for work. */
+  attentionPeriodMs: 1100,
+  /** One full turn of the hue wheel. Slow, because idle is the absence of news. */
+  rainbowPeriodMs: 12_000,
+  /** How long one heart owns a light when there are fewer lights than hearts. */
+  slicePeriodMs: 1600,
+  /** Rainbow brightness, kept under the working pulse so idle never dominates. */
+  idleBrightness: 70
+};
+
 export const DEFAULT_TIMING = {
   /** How long `done` is shown before the light falls back to idle. */
   doneHoldMs: 90_000,
@@ -173,6 +197,44 @@ export class AgentStatusTracker {
   }
 
   /**
+   * Assigns the hearts to agents, one each.
+   *
+   * Ranked by what the heart would say first and recency second: with more
+   * agents alive than hearts, spending a heart on one that just finished would
+   * hide one that is still running, and hiding live work is the single thing
+   * this display must never do. Unfilled slots come back as idle hearts, so the
+   * result is always `count` wide and the room always shows a full set.
+   */
+  hearts(now = Date.now(), count = HEART_COUNT) {
+    this.prune(now);
+
+    const ranked = [...this.#panes.entries()]
+      .map(([paneKey, pane]) => ({
+        paneKey,
+        state: heartStateFor(pane.state),
+        agentState: pane.state,
+        label: parseWorktreeId(pane.worktreeId).label,
+        receivedAt: pane.receivedAt
+      }))
+      .sort(
+        (a, b) =>
+          HEART_STATES.indexOf(a.state) - HEART_STATES.indexOf(b.state) ||
+          b.receivedAt - a.receivedAt
+      );
+
+    return Array.from({ length: Math.max(1, Math.round(count)) }, (_, index) => {
+      const agent = ranked[index];
+      return {
+        index,
+        state: agent?.state ?? IDLE_STATUS,
+        paneKey: agent?.paneKey ?? null,
+        label: agent?.label ?? null,
+        agentState: agent?.agentState ?? null
+      };
+    });
+  }
+
+  /**
    * Groups live panes into projects, each with its own dominant status.
    *
    * This is what makes several concurrent projects legible: instead of one
@@ -269,6 +331,157 @@ export function resolveProjectCycleScene(
     color: scenes[active[0].status]?.color ?? '#ffffff',
     brightness: 100,
     projects: active.length,
+    flow: { steps: steps.slice(0, MAX_FLOW_STEPS), count: 0, action: 0 }
+  };
+}
+
+/** Collapses an agent's reported state into the three things a heart can say. */
+export function heartStateFor(agentState) {
+  if (agentState === 'blocked' || agentState === 'waiting') return 'attention';
+  if (agentState === 'working') return 'working';
+  // `done` counts as idle: the agent has stopped doing anything.
+  return IDLE_STATUS;
+}
+
+/** A full set of unassigned hearts — what an empty tracker looks like. */
+export function idleHearts(count = HEART_COUNT) {
+  return Array.from({ length: Math.max(1, Math.round(count)) }, (_, index) => ({
+    index,
+    state: IDLE_STATUS,
+    paneKey: null,
+    label: null,
+    agentState: null
+  }));
+}
+
+/**
+ * Colour, swing, and speed for one heart.
+ *
+ * Colours come from the configured scenes so a user's palette still applies,
+ * but the effect does not: hearts always pulse, because in this mode the shape
+ * of the animation is the alphabet — pulse means "an agent", rainbow means
+ * "nobody". A per-status `effect` override would make two lights disagree about
+ * what pulsing means.
+ */
+function heartAppearance(heart, scenes = DEFAULT_SCENES, brightnessScale = 1) {
+  const scale = Number.isFinite(brightnessScale) ? brightnessScale : 1;
+  const scaled = (value) => Math.min(100, Math.max(1, Math.round(value * scale)));
+
+  if (heart.state !== 'working' && heart.state !== 'attention') {
+    // Each heart starts a third of a turn further round the wheel, so three
+    // idle lights trace one rainbow across the room instead of three of them.
+    const hueOffset = (heart.index * 360) / HEART_COUNT;
+    const palette = rainbowPalette(6, hueOffset);
+    const brightness = scaled(HEART_TIMING.idleBrightness);
+    return {
+      effect: 'rainbow',
+      hueOffset,
+      palette,
+      color: palette[0],
+      brightness,
+      low: brightness,
+      period: HEART_TIMING.rainbowPeriodMs
+    };
+  }
+
+  const attention = heart.state === 'attention';
+  const fallback = attention ? DEFAULT_SCENES.waiting : DEFAULT_SCENES.working;
+  const source = (attention ? scenes?.waiting : scenes?.working) ?? fallback;
+  const color = source.color ?? fallback.color;
+  const brightness = scaled(source.brightness ?? fallback.brightness);
+
+  return {
+    effect: 'pulse',
+    hueOffset: 0,
+    palette: [color],
+    color,
+    brightness,
+    low: Math.min(brightness, scaled(source.minBrightness ?? fallback.minBrightness ?? 20)),
+    period: attention ? HEART_TIMING.attentionPeriodMs : HEART_TIMING.workingPeriodMs
+  };
+}
+
+/**
+ * One heart's turn on a light that has to carry all three.
+ *
+ * Four steps per heart is what keeps three hearts inside `MAX_FLOW_STEPS`. Both
+ * shapes open with a 50 ms snap so one heart's colour never fades through the
+ * next one's — an interpolation from blue to yellow passes through green, which
+ * would read as a fourth state that does not exist.
+ */
+function buildHeartSlice(look, slice) {
+  if (look.effect === 'rainbow') {
+    const colors = rainbowPalette(4, look.hueOffset);
+    const step = Math.max(50, Math.round((slice - 50) / (colors.length - 1)));
+    return [
+      { duration: 50, mode: 1, color: colors[0], brightness: look.brightness },
+      ...colors.slice(1).map((color) => ({ duration: step, mode: 1, color, brightness: look.brightness }))
+    ];
+  }
+
+  const hold = Math.max(50, Math.round((slice - 100) / 2));
+  return [
+    { duration: 50, mode: 1, color: look.color, brightness: look.brightness },
+    { duration: hold, mode: 1, color: look.color, brightness: look.brightness },
+    { duration: 50, mode: 1, color: look.color, brightness: look.low },
+    { duration: hold, mode: 1, color: look.color, brightness: look.low }
+  ];
+}
+
+/**
+ * Hearts mode: the scene one light shows when it is one of the hearts.
+ *
+ * With at least as many lights as hearts, a light *is* a heart — the number of
+ * blue lights in the room is the number of busy agents, with no counting or
+ * decoding involved. With fewer lights than that the information still has to
+ * survive, so each light beats through every heart in turn.
+ */
+export function resolveHeartsScene(
+  hearts,
+  scenes = DEFAULT_SCENES,
+  {
+    brightnessScale = 1,
+    deviceIndex = 0,
+    deviceCount = 1,
+    slicePeriodMs = HEART_TIMING.slicePeriodMs
+  } = {}
+) {
+  const list = Array.isArray(hearts) && hearts.length > 0 ? hearts : idleHearts();
+  const lights = Math.max(1, Math.round(deviceCount));
+  const index = Math.max(0, Math.round(deviceIndex));
+
+  if (lights >= list.length) {
+    const heart = list[index % list.length];
+    const look = heartAppearance(heart, scenes, brightnessScale);
+    const steps = buildEffectSteps(look.effect, {
+      palette: look.palette,
+      brightness: look.brightness,
+      low: look.low,
+      period: look.period
+    });
+
+    return {
+      status: heart.state,
+      hearts: list.length,
+      heart: heart.index,
+      power: 'on',
+      color: look.color,
+      brightness: look.brightness,
+      flow: { steps: steps.slice(0, MAX_FLOW_STEPS), count: 0, action: 0 }
+    };
+  }
+
+  const slice = Math.max(200, Math.round(slicePeriodMs));
+  const looks = list.map((heart) => heartAppearance(heart, scenes, brightnessScale));
+  const steps = looks.flatMap((look) => buildHeartSlice(look, slice));
+
+  return {
+    status: list[0].state,
+    hearts: list.length,
+    heart: null,
+    power: 'on',
+    color: looks[0].color,
+    brightness: looks[0].brightness,
     flow: { steps: steps.slice(0, MAX_FLOW_STEPS), count: 0, action: 0 }
   };
 }

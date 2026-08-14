@@ -14,6 +14,9 @@ import { resolveScene, STATUS_PRIORITY } from './scene.mjs';
 const STORAGE_KEY_DEVICES = 'known-devices';
 const DISCOVERY_NOTIFY_TITLE = 'Yeelight';
 
+/** What each heart looks like, in the words the legend uses. */
+const HEART_COLOURS = { working: 'blue', attention: 'yellow', idle: 'rainbow' };
+
 /** Human-readable one-liner for the status notification. */
 function describeSummary(summary) {
   const connected = summary.devices.filter((device) => device.connected).length;
@@ -25,8 +28,12 @@ function describeSummary(summary) {
     .map((status) => `${summary.counts[status]} ${status}`)
     .join(', ');
 
+  const hearts = summary.hearts
+    ? ` — hearts ${summary.hearts.map((heart) => HEART_COLOURS[heart.state] ?? heart.state).join('/')}`
+    : '';
+
   const sync = summary.enabled ? summary.status : 'sync off';
-  return `${sync} — ${lights}${agents ? ` — ${agents}` : ''}`;
+  return `${sync} — ${lights}${agents ? ` — ${agents}` : ''}${hearts}`;
 }
 
 export default async function activate(context) {

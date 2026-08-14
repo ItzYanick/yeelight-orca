@@ -101,6 +101,8 @@ Saving the file reloads it immediately — no restart, no reinstall.
   "brightnessScale": 1,      // 0.4 for a dark room
   "transitionMs": 400,
 
+  "hearts": false,           // see "Hearts" below
+
   "multiProject": "cycle",   // see "Multiple projects" below
   "projectCycleMs": 1400,
   "groupBy": "worktree",
@@ -147,6 +149,42 @@ than breaking the sync.
 Every effect runs as an on-device colour flow: one command sets it up, then the
 light animates on its own with no further network traffic.
 
+## Hearts
+
+`"hearts": true` swaps the whole mapping. Instead of one colour for the busiest
+project, the room shows **three hearts, one per agent**:
+
+| Heart | Agent | Meaning |
+| --- | --- | --- |
+| 🔵 blue, pulsing | `working` | this agent is running |
+| 🟡 yellow, pulsing twice as fast | `waiting` / `blocked` | this one wants you |
+| 🌈 rainbow | `done`, or no agent at all | this one is doing nothing |
+
+The point is the count: two blue and one rainbow means two agents are working
+and one slot is free, read at a glance without decoding anything.
+
+- **Three or more lights** — each light *is* a heart, ordered by IP address so a
+  light keeps the same heart across restarts.
+- **Fewer lights than that** — every light beats through all three hearts in
+  turn, so the information survives on a single bulb.
+- **All idle** — three rainbow hearts, each starting a third of the way round
+  the hue wheel, so one rainbow spans the set rather than three identical ones.
+
+Hearts are assigned urgency first, recency second: with more than three agents
+alive, a heart is never spent on one that has finished while another is still
+running. Lights pinned with `assignments` keep their project and sit out; the
+hearts lay themselves out across whatever is left.
+
+Two deliberate differences from the normal mode: the lights stay lit when
+everything is idle (that is what the rainbow is for), and a heart always pulses
+regardless of any `effect` you set on `scenes.working` or `scenes.waiting` —
+the animation *is* the alphabet here, so it cannot be per-status. Colours still
+come from those scenes.
+
+```bash
+node bin/orca-yeelight.mjs hearts   # preview: busy, waiting, then all idle
+```
+
 ## Multiple projects
 
 When agents are running in more than one worktree, a single light can still show
@@ -189,6 +227,7 @@ node bin/orca-yeelight.mjs demo          # cycle the whole palette
 node bin/orca-yeelight.mjs effect rainbow    # preview one effect
 node bin/orca-yeelight.mjs effect pulse '#ff0000'
 node bin/orca-yeelight.mjs projects 3        # preview the multi-project cycle
+node bin/orca-yeelight.mjs hearts            # preview hearts mode
 node bin/orca-yeelight.mjs props         # read live device properties
 node bin/orca-yeelight.mjs off
 ```
@@ -224,6 +263,7 @@ AgentStatusTracker ──► group by project ──► one status per project
   (per-pane table)     (worktreeId is           │
    prune stale          <repoId>::<path>)       ▼
                                      ┌── assigned light? ── that project's scene
+                                     ├── hearts mode? ── one heart per agent
                                      ├── multiProject cycle? ── one colour each
                                      └── otherwise ── the most urgent status
                                                  │
@@ -255,7 +295,7 @@ therefore a static reference rather than a live dashboard.
 npm test
 ```
 
-75 tests. The protocol and scene layers are pure and tested directly; the
+92 tests. The protocol and scene layers are pure and tested directly; the
 integration suite drives the real `activate()` entry point against a fake bulb
 that speaks the actual protocol, asserting on the commands a device would
 receive — including a regression test for firmware that ignores `get_prop`.

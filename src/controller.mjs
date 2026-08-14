@@ -11,6 +11,7 @@ import { discoverDevices } from './discovery.mjs';
 import {
   AgentStatusTracker,
   IDLE_STATUS,
+  resolveHeartsScene,
   resolveProjectCycleScene,
   resolveScene
 } from './scene.mjs';
@@ -25,6 +26,7 @@ export class YeelightController {
   #tick = null;
   #currentStatus = IDLE_STATUS;
   #projects = [];
+  #hearts = [];
   #signature = '';
   #log;
   #onStatusChange;
@@ -114,8 +116,25 @@ export class YeelightController {
     });
 
     // Bring the new light straight to the current scene.
-    device.setScene(this.#sceneForDevice(device, this.#projects));
+    device.setScene(this.#sceneForDevice(device, this.#projects, this.#heartSlots().get(key)));
     return device;
+  }
+
+  /**
+   * Which heart each light carries.
+   *
+   * Sorted by address rather than adoption order so a light keeps the same
+   * heart across restarts and rediscoveries — the mapping is only useful if it
+   * is the same one you learned yesterday. Assigned lights are left out: they
+   * were deliberately bound to a project, so hearts lay themselves out across
+   * whatever is left.
+   */
+  #heartSlots() {
+    const keys = [...this.#devices.entries()]
+      .filter(([, device]) => !this.#assignmentFor(device))
+      .map(([key]) => key)
+      .sort();
+    return new Map(keys.map((key, deviceIndex) => [key, { deviceIndex, deviceCount: keys.length }]));
   }
 
   /** Feeds an `agent.status.changed` payload in and repaints if needed. */
@@ -151,10 +170,10 @@ export class YeelightController {
    * The scene one light should show.
    *
    * An assigned light tracks only its project. Everything else shows the whole
-   * picture — either the single most urgent status, or a cycle through every
-   * running project when `multiProject` is "cycle".
+   * picture — one heart per agent in hearts mode, otherwise the single most
+   * urgent status or a cycle through every running project.
    */
-  #sceneForDevice(device, projects) {
+  #sceneForDevice(device, projects, slot) {
     const options = { brightnessScale: this.#config.brightnessScale };
 
     if (!this.#config.enabled) {
@@ -165,6 +184,13 @@ export class YeelightController {
     if (assignment) {
       const project = this.#projectFor(assignment.match, projects);
       return resolveScene(project?.status ?? IDLE_STATUS, this.#config.scenes, options);
+    }
+
+    if (this.#config.hearts) {
+      return resolveHeartsScene(this.#hearts, this.#config.scenes, {
+        ...options,
+        ...(slot ?? { deviceIndex: 0, deviceCount: 1 })
+      });
     }
 
     if (this.#config.multiProject === 'cycle') {
@@ -184,22 +210,32 @@ export class YeelightController {
 
     const projects = enabled ? this.#tracker.projects(now, { groupBy: this.#config.groupBy }) : [];
     const status = enabled ? this.#tracker.dominantStatus(now) : IDLE_STATUS;
+    const hearts = enabled && this.#config.hearts ? this.#tracker.hearts(now) : [];
 
     // A project count change matters even when the dominant status does not:
-    // a second blocked project must re-render the cycle.
-    const signature = `${status}:${projects.map((p) => `${p.key}=${p.status}`).join(',')}`;
+    // a second blocked project must re-render the cycle. The same goes for the
+    // hearts: their ordered states are exactly what the lights draw.
+    const signature =
+      `${status}:${projects.map((p) => `${p.key}=${p.status}`).join(',')}` +
+      `|${hearts.map((heart) => heart.state).join(',')}`;
     const changed = signature !== this.#signature;
 
     this.#currentStatus = status;
     this.#projects = projects;
+    this.#hearts = hearts;
     this.#signature = signature;
 
-    for (const device of this.#devices.values()) {
-      device.setScene(this.#sceneForDevice(device, projects));
+    const slots = this.#heartSlots();
+    for (const [key, device] of this.#devices) {
+      device.setScene(this.#sceneForDevice(device, projects, slots.get(key)));
     }
 
     if (changed) {
-      const detail = projects.length > 1 ? ` across ${projects.length} projects` : '';
+      const detail = hearts.length
+        ? ` — hearts ${hearts.map((heart) => heart.state).join('/')}`
+        : projects.length > 1
+          ? ` across ${projects.length} projects`
+          : '';
       this.#log(`status -> ${status}${detail}`);
       this.#onStatusChange(this.summary());
     }
@@ -237,6 +273,9 @@ export class YeelightController {
       enabled: this.#config.enabled,
       status: this.#currentStatus,
       counts: this.#tracker.countsByStatus(),
+      hearts: this.#config.hearts
+        ? this.#hearts.map(({ index, state, label }) => ({ index, state, label }))
+        : null,
       projects: this.#projects.map(({ label, status, panes }) => ({ label, status, panes })),
       devices: this.devices.map((device) => ({
         id: device.id,

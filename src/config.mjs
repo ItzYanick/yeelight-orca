@@ -35,6 +35,18 @@ export const DEFAULT_CONFIG = {
    */
   devices: [],
   /**
+   * Hearts mode. Instead of one colour for the busiest project, the room shows
+   * three hearts, one per agent: blue pulsing while it works, yellow pulsing
+   * when it wants you, rainbow when it is doing nothing. With three or more
+   * lights each light is one heart; with fewer, every light beats through all
+   * three in turn. All idle means three rainbow hearts, a third of the hue
+   * wheel apart, so one rainbow spans the room.
+   *
+   * This replaces the project mapping below on every unassigned light, and the
+   * lights stay lit when idle rather than switching off.
+   */
+  hearts: false,
+  /**
    * With several projects running at once:
    *   "cycle"    — one light steps through each project's status colour
    *   "priority" — one light shows only the most urgent status
@@ -195,6 +207,9 @@ export function normalizeConfig(raw) {
       enabled: input.enabled !== false,
       autoDiscover: input.autoDiscover !== false,
       devices,
+      // Opt-in: it takes the lights over completely, so only an explicit
+      // `true` turns it on.
+      hearts: input.hearts === true,
       multiProject,
       groupBy,
       projectCycleMs: coerceNumber(input.projectCycleMs, 1400, { min: 200, max: 10_000 }),

@@ -35,6 +35,7 @@ Usage:
   orca-yeelight effect <name> [hex] Preview one effect
                                     (${EFFECTS.join(' | ')})
   orca-yeelight projects [n]        Preview the multi-project cycle with n projects
+  orca-yeelight hearts              Preview hearts mode: busy, waiting, then all idle
   orca-yeelight props               Print live properties of each light
   orca-yeelight off                 Turn every light off
   orca-yeelight --help
@@ -176,6 +177,43 @@ async function main(argv) {
           periodMs: controller.config.projectCycleMs
         })
       );
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+    });
+    return;
+  }
+
+  if (command === 'hearts') {
+    await withController(async (controller) => {
+      // Drive the real path — config, tracker, per-light heart slots — with
+      // fabricated agents, so the preview is the thing itself and not a mock.
+      controller.updateConfig({
+        ...controller.config,
+        enabled: true,
+        hearts: true,
+        assignments: []
+      });
+
+      const now = Date.now();
+      const demo = [
+        { paneKey: 'demo-1', state: 'working', worktreeId: 'demo::/tmp/alpha' },
+        { paneKey: 'demo-2', state: 'waiting', worktreeId: 'demo::/tmp/beta' }
+      ];
+      for (const [index, pane] of demo.entries()) {
+        controller.handleAgentStatus({ ...pane, receivedAt: now - index });
+      }
+
+      const lights = controller.devices.length;
+      log(
+        lights >= 3
+          ? `Three hearts across ${lights} lights: blue (working), yellow (waiting), rainbow (idle).`
+          : `Fewer lights (${lights}) than hearts, so each light beats through all three: ` +
+            'blue (working), yellow (waiting), rainbow (idle).'
+      );
+      await new Promise((resolve) => setTimeout(resolve, 12_000));
+
+      log('All idle: three rainbow hearts, a third of the hue wheel apart.');
+      controller.tracker.clear();
+      controller.refresh();
       await new Promise((resolve) => setTimeout(resolve, 15_000));
     });
     return;
