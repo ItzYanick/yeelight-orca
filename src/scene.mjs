@@ -10,6 +10,8 @@
  * real timer.
  */
 
+import { rainbowPalette } from './protocol.mjs';
+
 /** Highest urgency first — the first match wins when agents disagree. */
 export const STATUS_PRIORITY = ['blocked', 'waiting', 'working', 'done'];
 
@@ -160,6 +162,200 @@ export class AgentStatusTracker {
     }
     return counts;
   }
+
+  /**
+   * Groups live panes into projects, each with its own dominant status.
+   *
+   * This is what makes several concurrent projects legible: instead of one
+   * global answer, you get one status per project, ordered most urgent first.
+   */
+  projects(now = Date.now(), { groupBy = 'worktree' } = {}) {
+    this.prune(now);
+
+    const grouped = new Map();
+    for (const pane of this.#panes.values()) {
+      const identity = parseWorktreeId(pane.worktreeId);
+      const key = groupBy === 'repo' ? identity.repoId : identity.key;
+      const existing = grouped.get(key) ?? { key, label: identity.label, states: new Set(), panes: 0 };
+      existing.states.add(pane.state);
+      existing.panes += 1;
+      grouped.set(key, existing);
+    }
+
+    return [...grouped.values()]
+      .map(({ key, label, states, panes }) => ({
+        key,
+        label,
+        panes,
+        status: STATUS_PRIORITY.find((status) => states.has(status)) ?? IDLE_STATUS
+      }))
+      .sort(
+        (a, b) =>
+          STATUS_PRIORITY.indexOf(a.status) - STATUS_PRIORITY.indexOf(b.status) ||
+          a.label.localeCompare(b.label)
+      );
+  }
+}
+
+/**
+ * Splits Orca's `<repoId>::<worktreePath>` worktree id.
+ *
+ * The path is embedded in the id, so a readable project name comes for free —
+ * no extra event subscription or host call needed. Anything that does not match
+ * the shape is passed through as an opaque key rather than being dropped, so an
+ * id format change degrades to "one unnamed project" instead of breaking.
+ */
+export function parseWorktreeId(worktreeId) {
+  if (!worktreeId || typeof worktreeId !== 'string') {
+    return { key: 'unknown', repoId: 'unknown', path: '', label: 'unassigned' };
+  }
+
+  const separator = worktreeId.indexOf('::');
+  if (separator < 0) {
+    return { key: worktreeId, repoId: worktreeId, path: '', label: worktreeId };
+  }
+
+  const repoId = worktreeId.slice(0, separator);
+  const path = worktreeId.slice(separator + 2);
+  const label = path.split(/[\\/]/).filter(Boolean).pop() || repoId;
+  return { key: worktreeId, repoId, path, label };
+}
+
+/**
+ * One light, several projects: cycle the light through each project's status
+ * colour so you can see both *what* is happening and *how many* are running.
+ *
+ * Colours snap rather than fade, because a fade between two project colours
+ * produces intermediate hues that read as a third, non-existent project.
+ */
+export function resolveProjectCycleScene(
+  projects,
+  scenes = DEFAULT_SCENES,
+  { brightnessScale = 1, periodMs = 1400 } = {}
+) {
+  const active = projects.filter((project) => project.status !== IDLE_STATUS).slice(0, 8);
+
+  if (active.length === 0) return resolveScene(IDLE_STATUS, scenes, { brightnessScale });
+  if (active.length === 1) return resolveScene(active[0].status, scenes, { brightnessScale });
+
+  const scale = Number.isFinite(brightnessScale) ? brightnessScale : 1;
+  const hold = Math.max(50, Math.round(periodMs));
+
+  const steps = active.flatMap((project) => {
+    const definition = scenes[project.status] ?? DEFAULT_SCENES[project.status];
+    const color = definition?.color ?? '#ffffff';
+    const brightness = Math.min(
+      100,
+      Math.max(1, Math.round((definition?.brightness ?? 100) * scale))
+    );
+    return [
+      { duration: 50, mode: 1, color, brightness },
+      { duration: hold, mode: 1, color, brightness }
+    ];
+  });
+
+  return {
+    status: active[0].status,
+    power: 'on',
+    color: scenes[active[0].status]?.color ?? '#ffffff',
+    brightness: 100,
+    projects: active.length,
+    flow: { steps: steps.slice(0, MAX_FLOW_STEPS), count: 0, action: 0 }
+  };
+}
+
+/** Effects a scene may request. All but `solid`/`off` become colour flows. */
+export const EFFECTS = [
+  'solid',
+  'breathe',
+  'pulse',
+  'strobe',
+  'alternate',
+  'cycle',
+  'rainbow',
+  'candle',
+  'off'
+];
+
+/**
+ * Flow expressions live in the device's memory, so they must stay short.
+ * Sixteen tuples is well inside what every tested model accepts.
+ */
+export const MAX_FLOW_STEPS = 16;
+
+/** Fixed flicker pattern — deterministic so a scene's fingerprint is stable. */
+const CANDLE_PATTERN = [
+  [0.35, 1],
+  [1, 0.45],
+  [0.6, 0.8],
+  [0.9, 0.3],
+  [0.45, 0.7],
+  [0.8, 0.5]
+];
+
+/**
+ * Expands an effect into colour-flow steps.
+ *
+ * Separated from `resolveScene` because the multi-project cycle needs the same
+ * grammar with a palette it computes itself.
+ *
+ * A Yeelight flow interpolates *towards* each step's value over that step's
+ * duration, so a "snap" is a 50 ms step to the target followed by a hold at the
+ * same value. That trick is what separates `alternate`/`strobe` (hard edges)
+ * from `cycle`/`breathe` (smooth ramps).
+ */
+export function buildEffectSteps(effect, { palette, brightness, low, period }) {
+  const colors = palette.length > 0 ? palette : ['#ffffff'];
+  const slice = Math.max(50, Math.round(period / colors.length));
+
+  switch (effect) {
+    case 'breathe':
+      return [
+        { duration: period / 2, mode: 1, color: colors[0], brightness: low },
+        { duration: period / 2, mode: 1, color: colors[0], brightness }
+      ];
+
+    case 'pulse':
+      // Snap bright, decay slowly: reads as more urgent than a breath.
+      return [
+        { duration: 50, mode: 1, color: colors[0], brightness },
+        { duration: period / 2, mode: 1, color: colors[0], brightness: low },
+        { duration: 50, mode: 1, color: colors[0], brightness },
+        { duration: period / 2, mode: 1, color: colors[0], brightness: low }
+      ];
+
+    case 'strobe':
+      // Hard on/off. Brightness 1 rather than 0 — the device treats 0 as unset.
+      return [
+        { duration: 50, mode: 1, color: colors[0], brightness },
+        { duration: Math.max(50, period * 0.2), mode: 1, color: colors[0], brightness },
+        { duration: 50, mode: 1, color: colors[0], brightness: 1 },
+        { duration: Math.max(50, period * 0.3), mode: 1, color: colors[0], brightness: 1 }
+      ];
+
+    case 'alternate':
+      // Snap between every colour in the palette, holding each.
+      return colors.flatMap((color) => [
+        { duration: 50, mode: 1, color, brightness },
+        { duration: Math.max(50, slice - 50), mode: 1, color, brightness }
+      ]);
+
+    case 'cycle':
+    case 'rainbow':
+      // Smooth fade through the palette.
+      return colors.map((color) => ({ duration: slice, mode: 1, color, brightness }));
+
+    case 'candle':
+      return CANDLE_PATTERN.map(([durationScale, brightnessScale]) => ({
+        duration: Math.max(50, period * 0.25 * durationScale),
+        mode: 1,
+        color: colors[0],
+        brightness: Math.max(low, Math.round(brightness * brightnessScale))
+      }));
+
+    default:
+      throw new Error(`unknown scene effect: ${effect}`);
+  }
 }
 
 /**
@@ -185,30 +381,25 @@ export function resolveScene(status, scenes = DEFAULT_SCENES, { brightnessScale 
     return { status, power: 'on', color, brightness };
   }
 
-  if (effect === 'breathe' || effect === 'pulse') {
-    const period = Math.max(200, Math.round(definition.periodMs ?? 2000));
-    const low = Math.min(
-      brightness,
-      Math.max(1, Math.round((definition.minBrightness ?? 20) * scale))
-    );
-    // A breath is a smooth ramp each way; a pulse snaps bright then decays,
-    // which reads as more urgent at the same period.
-    const steps =
-      effect === 'breathe'
-        ? [
-            { duration: period / 2, mode: 1, color, brightness: low },
-            { duration: period / 2, mode: 1, color, brightness }
-          ]
-        : [
-            { duration: 50, mode: 1, color, brightness },
-            { duration: period / 2, mode: 1, color, brightness: low },
-            { duration: 50, mode: 1, color, brightness },
-            { duration: period / 2, mode: 1, color, brightness: low }
-          ];
+  const period = Math.max(200, Math.round(definition.periodMs ?? 2000));
+  const low = Math.min(brightness, Math.max(1, Math.round((definition.minBrightness ?? 20) * scale)));
 
-    // count 0 = repeat forever; action 0 = restore prior state when stopped.
-    return { status, power: 'on', color, brightness, flow: { steps, count: 0, action: 0 } };
-  }
+  const palette =
+    effect === 'rainbow'
+      ? rainbowPalette(definition.colors?.length || 6)
+      : (Array.isArray(definition.colors) && definition.colors.length
+          ? definition.colors
+          : [color]
+        ).slice(0, 8);
 
-  throw new Error(`unknown scene effect: ${effect}`);
+  const steps = buildEffectSteps(effect, { palette, brightness, low, period });
+
+  // count 0 = repeat forever; action 0 = restore prior state when stopped.
+  return {
+    status,
+    power: 'on',
+    color,
+    brightness,
+    flow: { steps: steps.slice(0, MAX_FLOW_STEPS), count: 0, action: 0 }
+  };
 }

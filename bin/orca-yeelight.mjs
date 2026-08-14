@@ -18,7 +18,12 @@ import process from 'node:process';
 import { loadConfig } from '../src/config.mjs';
 import { YeelightController } from '../src/controller.mjs';
 import { discoverDevices } from '../src/discovery.mjs';
-import { resolveScene, STATUS_PRIORITY } from '../src/scene.mjs';
+import {
+  EFFECTS,
+  resolveProjectCycleScene,
+  resolveScene,
+  STATUS_PRIORITY
+} from '../src/scene.mjs';
 
 const USAGE = `orca-yeelight — drive Yeelight lights with the Orca status palette
 
@@ -27,6 +32,9 @@ Usage:
   orca-yeelight scene <status>      Apply one status colour
                                     (${[...STATUS_PRIORITY, 'idle'].join(' | ')})
   orca-yeelight demo                Cycle through every status colour
+  orca-yeelight effect <name> [hex] Preview one effect
+                                    (${EFFECTS.join(' | ')})
+  orca-yeelight projects [n]        Preview the multi-project cycle with n projects
   orca-yeelight props               Print live properties of each light
   orca-yeelight off                 Turn every light off
   orca-yeelight --help
@@ -127,6 +135,48 @@ async function main(argv) {
         );
         await new Promise((resolve) => setTimeout(resolve, 3000));
       }
+    });
+    return;
+  }
+
+  if (command === 'effect') {
+    const [name, color = '#1e6bff'] = rest;
+    if (!name || !EFFECTS.includes(name)) {
+      console.error(`Unknown effect "${name ?? ''}".\n${USAGE}`);
+      process.exitCode = 1;
+      return;
+    }
+    await withController(async (controller) => {
+      // A synthetic single-status palette so any effect can be previewed.
+      const scene = resolveScene('preview', {
+        preview: { color, brightness: 90, effect: name, periodMs: 1600, minBrightness: 15 }
+      });
+      controller.applyScene(scene);
+      log(`Previewing "${name}" in ${color}. Ctrl-C when you have seen enough.`);
+      await new Promise((resolve) => setTimeout(resolve, 12_000));
+    });
+    return;
+  }
+
+  if (command === 'projects') {
+    const count = Math.min(4, Math.max(2, Number.parseInt(rest[0] ?? '3', 10) || 3));
+    await withController(async (controller) => {
+      // Fabricate one project per status so the cycle is visible without
+      // needing that many agents actually running.
+      const projects = STATUS_PRIORITY.slice(0, count).map((status, index) => ({
+        key: `demo-${index}`,
+        label: `project-${index + 1}`,
+        status,
+        panes: 1
+      }));
+      log(`Cycling ${count} projects: ${projects.map((p) => p.status).join(' -> ')}`);
+      controller.applyScene(
+        resolveProjectCycleScene(projects, controller.config.scenes, {
+          brightnessScale: controller.config.brightnessScale,
+          periodMs: controller.config.projectCycleMs
+        })
+      );
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
     });
     return;
   }

@@ -8,7 +8,12 @@
 
 import { YeelightDevice } from './device.mjs';
 import { discoverDevices } from './discovery.mjs';
-import { AgentStatusTracker, IDLE_STATUS, resolveScene } from './scene.mjs';
+import {
+  AgentStatusTracker,
+  IDLE_STATUS,
+  resolveProjectCycleScene,
+  resolveScene
+} from './scene.mjs';
 
 /** How often to re-evaluate so `done` decays to idle without a new event. */
 const TICK_INTERVAL_MS = 5000;
@@ -19,6 +24,8 @@ export class YeelightController {
   #config;
   #tick = null;
   #currentStatus = IDLE_STATUS;
+  #projects = [];
+  #signature = '';
   #log;
   #onStatusChange;
 
@@ -107,7 +114,7 @@ export class YeelightController {
     });
 
     // Bring the new light straight to the current scene.
-    device.setScene(this.#sceneForCurrentStatus());
+    device.setScene(this.#sceneForDevice(device, this.#projects));
     return device;
   }
 
@@ -123,25 +130,77 @@ export class YeelightController {
     if (this.#tracker.removeWorktree(worktreeId) > 0) this.refresh();
   }
 
-  #sceneForCurrentStatus() {
-    return resolveScene(this.#currentStatus, this.#config.scenes, {
-      brightnessScale: this.#config.brightnessScale
+  /** The assignment binding a light to one project, if the user set one. */
+  #assignmentFor(device) {
+    const assignments = this.#config.assignments ?? [];
+    return assignments.find((assignment) => {
+      const target = assignment.device.toLowerCase();
+      return [device.host, device.name, device.id].some(
+        (candidate) => candidate && candidate.toLowerCase() === target
+      );
     });
   }
 
-  /** Recomputes the dominant status and pushes the scene to every device. */
-  refresh() {
-    const status = this.#config.enabled ? this.#tracker.dominantStatus() : IDLE_STATUS;
-    const changed = status !== this.#currentStatus;
-    this.#currentStatus = status;
+  /** Finds the project an assignment points at, by name, path, or id. */
+  #projectFor(match, projects) {
+    const needle = match.toLowerCase();
+    return projects.find((project) => `${project.label} ${project.key}`.toLowerCase().includes(needle));
+  }
 
-    const scene = this.#sceneForCurrentStatus();
+  /**
+   * The scene one light should show.
+   *
+   * An assigned light tracks only its project. Everything else shows the whole
+   * picture — either the single most urgent status, or a cycle through every
+   * running project when `multiProject` is "cycle".
+   */
+  #sceneForDevice(device, projects) {
+    const options = { brightnessScale: this.#config.brightnessScale };
+
+    if (!this.#config.enabled) {
+      return resolveScene(IDLE_STATUS, this.#config.scenes, options);
+    }
+
+    const assignment = this.#assignmentFor(device);
+    if (assignment) {
+      const project = this.#projectFor(assignment.match, projects);
+      return resolveScene(project?.status ?? IDLE_STATUS, this.#config.scenes, options);
+    }
+
+    if (this.#config.multiProject === 'cycle') {
+      return resolveProjectCycleScene(projects, this.#config.scenes, {
+        ...options,
+        periodMs: this.#config.projectCycleMs
+      });
+    }
+
+    return resolveScene(this.#currentStatus, this.#config.scenes, options);
+  }
+
+  /** Recomputes per-project status and pushes a scene to every device. */
+  refresh() {
+    const now = Date.now();
+    const enabled = this.#config.enabled;
+
+    const projects = enabled ? this.#tracker.projects(now, { groupBy: this.#config.groupBy }) : [];
+    const status = enabled ? this.#tracker.dominantStatus(now) : IDLE_STATUS;
+
+    // A project count change matters even when the dominant status does not:
+    // a second blocked project must re-render the cycle.
+    const signature = `${status}:${projects.map((p) => `${p.key}=${p.status}`).join(',')}`;
+    const changed = signature !== this.#signature;
+
+    this.#currentStatus = status;
+    this.#projects = projects;
+    this.#signature = signature;
+
     for (const device of this.#devices.values()) {
-      device.setScene(scene);
+      device.setScene(this.#sceneForDevice(device, projects));
     }
 
     if (changed) {
-      this.#log(`status -> ${status}`);
+      const detail = projects.length > 1 ? ` across ${projects.length} projects` : '';
+      this.#log(`status -> ${status}${detail}`);
       this.#onStatusChange(this.summary());
     }
     return status;
@@ -178,6 +237,7 @@ export class YeelightController {
       enabled: this.#config.enabled,
       status: this.#currentStatus,
       counts: this.#tracker.countsByStatus(),
+      projects: this.#projects.map(({ label, status, panes }) => ({ label, status, panes })),
       devices: this.devices.map((device) => ({
         id: device.id,
         label: device.label,

@@ -110,7 +110,7 @@ describe('resolveScene', () => {
   });
 
   it('rejects an unknown effect', () => {
-    assert.throws(() => resolveScene('working', { working: { effect: 'strobe' } }), /unknown scene effect/);
+    assert.throws(() => resolveScene('working', { working: { effect: 'lava-lamp' } }), /unknown scene effect/);
   });
 });
 
@@ -142,7 +142,7 @@ describe('normalizeConfig', () => {
 
   it('falls back on a bad colour or effect and says why', () => {
     const { config, warnings } = normalizeConfig({
-      scenes: { blocked: { color: 'not-a-colour', effect: 'strobe' } }
+      scenes: { blocked: { color: 'not-a-colour', effect: 'lava-lamp' } }
     });
     assert.equal(config.scenes.blocked.color, DEFAULT_SCENES.blocked.color);
     assert.equal(config.scenes.blocked.effect, DEFAULT_SCENES.blocked.effect);

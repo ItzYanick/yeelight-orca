@@ -95,6 +95,11 @@ Saving the file reloads it immediately — no restart, no reinstall.
   "brightnessScale": 1,      // 0.4 for a dark room
   "transitionMs": 400,
 
+  "multiProject": "cycle",   // see "Multiple projects" below
+  "projectCycleMs": 1400,
+  "groupBy": "worktree",
+  "assignments": [],
+
   "scenes": {
     "blocked": { "color": "#ff1a1a", "brightness": 100, "effect": "pulse",   "periodMs": 900,  "minBrightness": 20 },
     "waiting": { "color": "#ffa000", "brightness": 90,  "effect": "breathe", "periodMs": 2600, "minBrightness": 25 },
@@ -110,8 +115,58 @@ Saving the file reloads it immediately — no restart, no reinstall.
 }
 ```
 
-`effect` is one of `solid`, `breathe`, `pulse`, or `off`. A malformed field
-falls back to its default and logs a warning rather than breaking the sync.
+### Effects
+
+| Effect | Looks like |
+| --- | --- |
+| `solid` | steady colour |
+| `breathe` | smooth fade up and down |
+| `pulse` | snap bright, slow decay — more urgent than a breath |
+| `strobe` | hard on/off flashing |
+| `alternate` | snaps between the colours in `colors` |
+| `cycle` | smooth fade through `colors` |
+| `rainbow` | fades through a generated hue wheel |
+| `candle` | irregular flicker |
+| `off` | light off |
+
+Multi-colour effects read the scene's `colors` array (up to 8); the others use
+`color`. A malformed field falls back to its default and logs a warning rather
+than breaking the sync.
+
+```jsonc
+"done": { "effect": "rainbow", "brightness": 80 },
+"waiting": { "effect": "alternate", "colors": ["#ffa000", "#ff4400"], "periodMs": 1200 }
+```
+
+Every effect runs as an on-device colour flow: one command sets it up, then the
+light animates on its own with no further network traffic.
+
+## Multiple projects
+
+When agents are running in more than one worktree, a single light can still show
+all of them — it steps through one colour per project, so three colours means
+three projects.
+
+```jsonc
+"multiProject": "cycle",     // "cycle" (default) or "priority"
+"projectCycleMs": 1400,      // how long each project's colour is held
+"groupBy": "worktree",       // or "repo", to merge a repo's worktrees
+```
+
+`priority` restores the simpler behaviour: only the single most urgent status is
+shown. With one project running the two modes are identical.
+
+With several lights, bind one to a project so it ignores everything else:
+
+```jsonc
+"assignments": [
+  { "match": "yeelight-orca", "device": "192.168.1.50" },
+  { "match": "api-server",    "device": "Desk cube" }
+]
+```
+
+`match` is matched against the worktree name or path; `device` against a light's
+IP, name, or id. Unassigned lights keep showing the global picture.
 
 Want the light to dim instead of switching off when idle? Set
 `"idle": { "effect": "solid", "color": "#101010", "brightness": 1 }`.
@@ -125,6 +180,9 @@ work before involving Orca:
 node bin/orca-yeelight.mjs discover      # scan and list every light
 node bin/orca-yeelight.mjs scene blocked # apply one status colour
 node bin/orca-yeelight.mjs demo          # cycle the whole palette
+node bin/orca-yeelight.mjs effect rainbow    # preview one effect
+node bin/orca-yeelight.mjs effect pulse '#ff0000'
+node bin/orca-yeelight.mjs projects 3        # preview the multi-project cycle
 node bin/orca-yeelight.mjs props         # read live device properties
 node bin/orca-yeelight.mjs off
 ```
@@ -156,9 +214,14 @@ kill agents abruptly.
 Orca agent hooks
       │  agent.status.changed { paneKey, state, worktreeId }
       ▼
-AgentStatusTracker ──► dominant status ──► resolveScene() ──► scene
-   (per-pane table)     blocked > waiting        │
-    prune stale         > working > done         ▼
+AgentStatusTracker ──► group by project ──► one status per project
+  (per-pane table)     (worktreeId is           │
+   prune stale          <repoId>::<path>)       ▼
+                                     ┌── assigned light? ── that project's scene
+                                     ├── multiProject cycle? ── one colour each
+                                     └── otherwise ── the most urgent status
+                                                 │
+                                                 ▼
                                         sceneToCommands()
                                                  │  one set_scene where possible
                                                  ▼
@@ -186,16 +249,16 @@ therefore a static reference rather than a live dashboard.
 npm test
 ```
 
-47 tests. The protocol and scene layers are pure and tested directly; the
+75 tests. The protocol and scene layers are pure and tested directly; the
 integration suite drives the real `activate()` entry point against a fake bulb
 that speaks the actual protocol, asserting on the commands a device would
 receive — including a regression test for firmware that ignores `get_prop`.
 
 ## Adding more lights
 
-Every adopted light mirrors the same status. Discovery adopts all of them, so
-plugging in a second cube needs no configuration. Per-worktree assignment
-(one light per agent) is a natural next step but is not implemented.
+Discovery adopts every light it finds, so plugging in a second cube needs no
+configuration — by default they all mirror the same picture. Use `assignments`
+to give a light a project of its own.
 
 ## License
 

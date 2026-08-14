@@ -8,6 +8,7 @@
  */
 
 import assert from 'node:assert/strict';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -16,6 +17,16 @@ import { after, before, describe, it } from 'node:test';
 
 import { decodeMessages, toRgbInt } from '../src/protocol.mjs';
 import { DEFAULT_SCENES } from '../src/scene.mjs';
+
+/**
+ * `src/config.mjs` resolves CONFIG_PATH once, when it is first imported. The
+ * override therefore has to be in place before *any* test pulls that module
+ * in -- otherwise a later suite silently runs against the developer's real
+ * ~/.orca/yeelight.json and tries to reach real lights.
+ */
+const CONFIG_DIR = fsSync.mkdtempSync(path.join(os.tmpdir(), 'yeelight-orca-'));
+const TEST_CONFIG_PATH = path.join(CONFIG_DIR, 'yeelight.json');
+process.env.ORCA_YEELIGHT_CONFIG = TEST_CONFIG_PATH;
 
 /** Minimal Yeelight that records commands and acknowledges each one. */
 function startFakeBulb() {
@@ -107,6 +118,70 @@ function lastScene(received) {
   return [...received].reverse().find((message) => message.method === 'set_scene');
 }
 
+describe('per-project light assignment', () => {
+  /**
+   * Two lights, two projects, one assignment: the assigned light must follow
+   * only its own project while the other keeps showing the whole picture.
+   */
+  it('routes each project to its assigned light', async () => {
+    const alpha = await startFakeBulb();
+    const beta = await startFakeBulb();
+
+    const { YeelightController } = await import('../src/controller.mjs');
+    const { normalizeConfig } = await import('../src/config.mjs');
+
+    const { config } = normalizeConfig({
+      autoDiscover: false,
+      devices: [
+        { host: '127.0.0.1', port: alpha.port, name: 'alpha-light' },
+        { host: '127.0.0.1', port: beta.port, name: 'beta-light' }
+      ],
+      // Only alpha-light is pinned to a project; beta-light stays global.
+      assignments: [{ match: 'alpha', device: 'alpha-light' }]
+    });
+
+    const controller = new YeelightController(config, { log: () => {} });
+    await controller.start();
+    await settle();
+
+    controller.handleAgentStatus({
+      paneKey: 'p1',
+      state: 'working',
+      worktreeId: 'r1::/w/alpha',
+      receivedAt: Date.now()
+    });
+    controller.handleAgentStatus({
+      paneKey: 'p2',
+      state: 'blocked',
+      worktreeId: 'r2::/w/beta',
+      receivedAt: Date.now()
+    });
+    await settle();
+
+    try {
+      // The assigned light shows alpha's own status: steady blue, no flow.
+      const assigned = lastScene(alpha.received);
+      assert.equal(assigned.params[0], 'color');
+      assert.equal(assigned.params[1], toRgbInt(DEFAULT_SCENES.working.color));
+
+      // The unassigned light cycles both projects, so it must be a flow that
+      // contains beta's blocked red -- which the assigned light never shows.
+      const global = lastScene(beta.received);
+      assert.equal(global.params[0], 'cf');
+      assert.match(global.params[3], new RegExp(`,1,${toRgbInt(DEFAULT_SCENES.blocked.color)},`));
+      assert.match(global.params[3], new RegExp(`,1,${toRgbInt(DEFAULT_SCENES.working.color)},`));
+
+      const summary = controller.summary();
+      assert.equal(summary.projects.length, 2);
+      assert.equal(summary.projects[0].status, 'blocked', 'most urgent project first');
+    } finally {
+      controller.stop();
+      await alpha.close();
+      await beta.close();
+    }
+  });
+});
+
 describe('models that ignore get_prop', () => {
   /**
    * Regression test for real Cube Lite firmware: it accepts every write but
@@ -165,8 +240,7 @@ describe('plugin activate()', () => {
   before(async () => {
     bulb = await startFakeBulb();
 
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yeelight-orca-'));
-    configPath = path.join(dir, 'yeelight.json');
+    configPath = TEST_CONFIG_PATH;
     await fs.writeFile(
       configPath,
       JSON.stringify({
@@ -175,7 +249,6 @@ describe('plugin activate()', () => {
         devices: [{ host: '127.0.0.1', port: bulb.port, name: 'Fake bulb' }]
       })
     );
-    process.env.ORCA_YEELIGHT_CONFIG = configPath;
 
     ({ default: activate, deactivate } = await import('../src/index.mjs'));
 

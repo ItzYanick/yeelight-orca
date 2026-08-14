@@ -132,6 +132,40 @@ export function toHexColor(rgbInt) {
   return `#${(rgbInt & 0xffffff).toString(16).padStart(6, '0')}`;
 }
 
+/** HSV -> hex. Used to synthesise palettes (the rainbow effect) from a hue. */
+export function hsvToHex(hue, saturation = 1, value = 1) {
+  const h = ((hue % 360) + 360) % 360;
+  const s = Math.min(1, Math.max(0, saturation));
+  const v = Math.min(1, Math.max(0, value));
+
+  const chroma = v * s;
+  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - chroma;
+  const sector = Math.floor(h / 60) % 6;
+
+  const [r, g, b] = [
+    [chroma, x, 0],
+    [x, chroma, 0],
+    [0, chroma, x],
+    [0, x, chroma],
+    [x, 0, chroma],
+    [chroma, 0, x]
+  ][sector];
+
+  const channel = (component) =>
+    Math.round((component + m) * 255)
+      .toString(16)
+      .padStart(2, '0');
+
+  return `#${channel(r)}${channel(g)}${channel(b)}`;
+}
+
+/** Evenly spaced hues around the wheel. */
+export function rainbowPalette(count = 6) {
+  const size = Math.min(8, Math.max(2, Math.round(count)));
+  return Array.from({ length: size }, (_, index) => hsvToHex((index * 360) / size));
+}
+
 /**
  * Builds a color-flow expression: a comma-separated list of
  * `duration, mode, value, brightness` tuples.
