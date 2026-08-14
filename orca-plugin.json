@@ -1,0 +1,36 @@
+{
+  "manifestVersion": 1,
+  "id": "yeelight-sync",
+  "publisher": "yanick",
+  "name": "Yeelight Status Sync",
+  "version": "1.0.0",
+  "description": "Mirrors Orca agent status onto Yeelight smart lights over the LAN Control protocol: red when an agent is blocked, amber when it wants input, blue while it works, green when it finishes.",
+  "author": { "name": "Yanick" },
+  "repository": "https://github.com/ItzYanick/yeelight-orca",
+  "engines": { "orca": ">=1.4.0" },
+  "pluginApi": 1,
+  "main": "src/index.mjs",
+  "contributes": {
+    "panels": [
+      {
+        "id": "yeelight-status",
+        "title": "Yeelight",
+        "icon": "lightbulb",
+        "entry": "panel/status.html"
+      }
+    ],
+    "commands": [
+      { "id": "yeelight.discover", "title": "Yeelight: Discover Lights", "context": "global" },
+      { "id": "yeelight.status", "title": "Yeelight: Show Sync Status", "context": "global" },
+      { "id": "yeelight.test", "title": "Yeelight: Test Colour Mapping", "context": "global" },
+      { "id": "yeelight.toggle", "title": "Yeelight: Toggle Status Sync", "context": "global" },
+      { "id": "yeelight.off", "title": "Yeelight: Turn Lights Off", "context": "global" }
+    ],
+    "events": [{ "on": "agent.status.changed" }, { "on": "worktree.removed" }]
+  },
+  "capabilities": [
+    { "kind": "events:subscribe" },
+    { "kind": "notifications:show" },
+    { "kind": "storage" }
+  ]
+}

@@ -1,0 +1,180 @@
+<!--
+  Sidebar reference panel.
+
+  Orca renders plugin panels in a sandboxed frame with `connect-src 'none'`
+  and a three-action host bridge, so this panel is deliberately a static
+  reference — the colour legend, setup steps, and where to change things.
+  Live state is reported through the "Yeelight: Show Sync Status" command.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    margin: 0;
+    padding: 16px;
+    font:
+      13px/1.55 ui-sans-serif,
+      -apple-system,
+      system-ui,
+      sans-serif;
+    background: var(--background, #111);
+    color: var(--foreground, #eee);
+  }
+
+  h1 {
+    margin: 0 0 4px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  h2 {
+    margin: 22px 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted-foreground, #999);
+  }
+
+  p {
+    margin: 0 0 10px;
+    color: var(--muted-foreground, #999);
+  }
+
+  ol {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--muted-foreground, #999);
+  }
+
+  li {
+    margin-bottom: 6px;
+  }
+
+  .legend {
+    display: grid;
+    gap: 6px;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border, #333);
+    border-radius: var(--radius, 8px);
+    background: var(--card, transparent);
+  }
+
+  .swatch {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    box-shadow: 0 0 10px 1px currentColor;
+    background: currentColor;
+  }
+
+  .swatch.off {
+    background: transparent;
+    border: 1px solid var(--border, #444);
+    box-shadow: none;
+  }
+
+  .label {
+    font-weight: 600;
+  }
+
+  .desc {
+    margin-left: auto;
+    text-align: right;
+    color: var(--muted-foreground, #999);
+    font-size: 12px;
+  }
+
+  code,
+  kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--muted, rgba(127, 127, 127, 0.18));
+    color: var(--foreground, #eee);
+  }
+
+  .cmd {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border, #2a2a2a);
+  }
+
+  .cmd:last-child {
+    border-bottom: 0;
+  }
+
+  .cmd span:last-child {
+    color: var(--muted-foreground, #999);
+    text-align: right;
+  }
+</style>
+
+<h1>Yeelight Status Sync</h1>
+<p>Your lights mirror the busiest agent across every worktree.</p>
+
+<h2>Colour legend</h2>
+<div class="legend">
+  <div class="row" style="color: #ff1a1a">
+    <span class="swatch"></span>
+    <span class="label">Blocked</span>
+    <span class="desc">pulsing — an agent is stuck</span>
+  </div>
+  <div class="row" style="color: #ffa000">
+    <span class="swatch"></span>
+    <span class="label">Waiting</span>
+    <span class="desc">breathing — wants your input</span>
+  </div>
+  <div class="row" style="color: #1e6bff">
+    <span class="swatch"></span>
+    <span class="label">Working</span>
+    <span class="desc">steady — agent is running</span>
+  </div>
+  <div class="row" style="color: #12c46a">
+    <span class="swatch"></span>
+    <span class="label">Done</span>
+    <span class="desc">steady — finished recently</span>
+  </div>
+  <div class="row">
+    <span class="swatch off"></span>
+    <span class="label">Idle</span>
+    <span class="desc">off — nothing running</span>
+  </div>
+</div>
+
+<h2>Setup</h2>
+<ol>
+  <li>Open the Yeelight app, pick each light, and turn on <strong>LAN Control</strong>.</li>
+  <li>Run <strong>Yeelight: Discover Lights</strong> from the command palette.</li>
+  <li>Run <strong>Yeelight: Test Colour Mapping</strong> to walk the palette.</li>
+</ol>
+<p>
+  If discovery finds nothing, your network is probably blocking multicast — add each light's IP
+  under <code>devices</code> in the config file instead.
+</p>
+
+<h2>Commands</h2>
+<div class="cmd"><span>Discover Lights</span><span>rescan the LAN</span></div>
+<div class="cmd"><span>Show Sync Status</span><span>notification with live state</span></div>
+<div class="cmd"><span>Test Colour Mapping</span><span>cycle every colour</span></div>
+<div class="cmd"><span>Toggle Status Sync</span><span>pause without uninstalling</span></div>
+<div class="cmd"><span>Turn Lights Off</span><span>immediate blackout</span></div>
+
+<h2>Configuration</h2>
+<p>
+  Colours, brightness, effects, and manual device IPs live in
+  <code>~/.orca/yeelight.json</code>. Saving the file reloads it immediately — no restart.
+</p>
