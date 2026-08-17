@@ -491,16 +491,29 @@ describe('hearts on a matrix panel', () => {
       assert.ok(direct.length > 0, 'the panel must be put into direct mode');
 
       const frames = bulb.received.filter((message) => message.method === 'update_leds');
-      assert.ok(frames.length >= 3, `expected a stream of frames, got ${frames.length}`);
+      assert.ok(frames.length >= 1, `expected at least one frame, got ${frames.length}`);
 
       // Every frame is a full panel of three bytes per LED.
       for (const frame of frames) {
         assert.equal(Buffer.from(frame.params[0], 'base64').length, MATRIX_LEDS * 3);
       }
 
-      // Frames must differ over time, or nothing is actually animating.
-      const distinct = new Set(frames.map((frame) => frame.params[0]));
-      assert.ok(distinct.size > 1, 'frames should change over time');
+      // Nothing animates, so a second status change must be what redraws.
+      const before = frames.length;
+      controller.handleAgentStatus({
+        paneKey: 'p2',
+        state: 'blocked',
+        worktreeId: 'r2::/w/beta',
+        receivedAt: Date.now()
+      });
+      await settle(800);
+      const after = bulb.received.filter((message) => message.method === 'update_leds');
+      assert.ok(after.length > before, 'a status change must redraw the panel');
+      assert.notEqual(
+        after.at(-1).params[0],
+        frames.at(-1).params[0],
+        'the redraw must show something different'
+      );
 
       // Once the loop owns the light, scenes must stop.
       const sceneAfterFirstFrame = bulb.received

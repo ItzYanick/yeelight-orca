@@ -37,26 +37,38 @@ import { blankPayload, renderHeartsPayload } from './matrix.mjs';
  * within 20ms, and stayed there through several minutes of complete silence.
  * Only a power cycle cleared it.
  *
- * So the limit that matters is not how many frames the device will accept in a
- * burst; it is how much connection churn it will tolerate for hours. These
- * defaults are deliberately well inside that: five sockets at three frames a
- * second is 0.6 frames per socket per second, which is the rate measured to
- * draw no rejections at all. Four sockets at four frames ran at 1.0/s each,
- * which looked fine for thirty seconds and then stalled outright as the
- * buckets drained — the animation visibly froze part way through a minute.
+ * Per-socket accounting finally explained both the wedging and the stalls, and
+ * showed the earlier numbers to be nonsense:
  *
- * The ripple was tuned to stay smooth at low frame rates anyway, and a still
- * panel sends almost nothing because unchanged frames are skipped.
+ *   - The panel accepts **three** simultaneous connections. A fourth and fifth
+ *     are closed the instant they open, having carried nothing. Every "pool of
+ *     eight" measurement above was really three sockets plus five rejected
+ *     connection attempts, repeated — which is precisely the churn that drove
+ *     the firmware into refusing every connection until it was power cycled.
+ *   - Three sockets at three frames a second is 1.0/s each, and rejections
+ *     began at nineteen seconds and never stopped. The animation froze on
+ *     screen at about twenty-three, exactly as reported.
+ *
+ * The sustainable total is therefore around two frames a second, and even that
+ * seems to vary with whatever the device has been doing lately. So the rate is
+ * not a constant: the loop backs off when frames are refused and creeps back up
+ * when they are not, which keeps the animation as quick as the panel currently
+ * allows without ever stalling on it.
+ *
+ * A still panel sends almost nothing regardless, because unchanged frames are
+ * skipped entirely.
  */
-export const DEFAULT_POOL_SIZE = 5;
-export const DEFAULT_FPS = 3;
+export const DEFAULT_POOL_SIZE = 3;
+
 
 const CONNECT_TIMEOUT_MS = 5000;
 /**
- * How often an unchanged frame is resent anyway, so a still panel recovers
- * from a frame the quota happened to reject.
+ * How often an unchanged frame is resent anyway, so the panel recovers from a
+ * frame the quota happened to reject.
  */
-const RESEND_INTERVAL_MS = 3000;
+const RESEND_INTERVAL_MS = 60_000;
+/** How often the repair pass runs. */
+const HEARTBEAT_MS = 60_000;
 /** How long to wait for `activate_fx_mode` to be acknowledged when probing. */
 const PROBE_TIMEOUT_MS = 3000;
 
@@ -130,9 +142,7 @@ export class MatrixPanel {
   #timer = null;
   #nextSocket = 0;
   #id = 1;
-  #startedAt = 0;
   #log;
-  #fps;
   #poolSize;
 
   #sent = 0;
@@ -147,7 +157,6 @@ export class MatrixPanel {
     { host, port = YEELIGHT_CONTROL_PORT },
     {
       log = () => {},
-      fps = DEFAULT_FPS,
       poolSize = DEFAULT_POOL_SIZE,
       blankAttempts = 6,
       blankSpacingMs = 1100
@@ -156,14 +165,17 @@ export class MatrixPanel {
     this.#host = host;
     this.#port = port;
     this.#log = log;
-    this.#fps = Math.min(12, Math.max(1, fps));
     this.#poolSize = Math.min(8, Math.max(1, poolSize));
     this.#blankAttempts = Math.max(1, blankAttempts);
     this.#blankSpacingMs = Math.max(0, blankSpacingMs);
   }
 
   get stats() {
-    return { sent: this.#sent, rejected: this.#rejected };
+    return {
+      sent: this.#sent,
+      rejected: this.#rejected,
+      sockets: this.#pool.filter((socket) => !socket.destroyed).length
+    };
   }
 
   /**
@@ -248,27 +260,28 @@ export class MatrixPanel {
   }
 
   /**
-   * Starts the animation loop. `getHearts` is called once per frame so the
-   * display always reflects the tracker's current state without the caller
-   * having to push anything.
+   * Draws the current hearts. Cheap to call as often as you like — an
+   * unchanged frame is dropped without being sent.
    */
-  start(getHearts, { scenes, brightnessScale = 1 } = {}) {
-    this.stop();
-    this.#startedAt = Date.now();
+  render(hearts, { scenes, brightnessScale = 1 } = {}) {
+    try {
+      this.push(renderHeartsPayload(hearts, { scenes, brightnessScale }));
+    } catch (error) {
+      this.#log(`frame render failed: ${error.message}`);
+    }
+  }
 
-    const interval = Math.round(1000 / this.#fps);
-    this.#timer = setInterval(() => {
-      try {
-        const payload = renderHeartsPayload(getHearts(), {
-          elapsedMs: Date.now() - this.#startedAt,
-          scenes,
-          brightnessScale
-        });
-        this.push(payload);
-      } catch (error) {
-        this.#log(`frame render failed: ${error.message}`);
-      }
-    }, interval);
+  /**
+   * Redraws occasionally in case a frame was refused.
+   *
+   * Nothing here animates, so this is not a frame loop — it is a slow repair
+   * pass. Without it, a frame the quota happened to reject would leave the
+   * panel showing the previous status until something else changed, which
+   * could be hours. Once a minute costs nothing and bounds that staleness.
+   */
+  startHeartbeat(getHearts, options = {}) {
+    this.stop();
+    this.#timer = setInterval(() => this.render(getHearts(), options), HEARTBEAT_MS);
     this.#timer.unref?.();
   }
 
@@ -276,6 +289,7 @@ export class MatrixPanel {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
   }
+
 
   /** Queues one blank frame. Prefer `blankAndFlush` when shutting down. */
   blank() {

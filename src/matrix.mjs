@@ -1,11 +1,20 @@
 /**
  * Rendering for Yeelight matrix panels (Cube Lite).
  *
- * A panel is not a bulb: it has no colour-flow engine, so nothing animates on
- * its own. `activate_fx_mode {"mode":"direct"}` is the only effect mode the LAN
- * protocol exposes, and it means "the host draws every frame". Everything here
- * is therefore a pure function from (hearts, time) to one encoded frame; the
- * pushing lives in `matrix-driver.mjs`.
+ * A panel is not a bulb: it has no colour-flow engine, so `activate_fx_mode
+ * {"mode":"direct"}` — the only effect mode the LAN protocol exposes — means
+ * "the host draws every frame".
+ *
+ * These hearts do not animate, and that is a hardware decision rather than a
+ * stylistic one. Driving the panel continuously wedged two units: they stop
+ * acknowledging commands and go dark until they are unplugged, and the second
+ * one did it while being driven at one frame a second, comfortably inside every
+ * budget that could be measured. A display you have to power cycle is worse
+ * than a still one, so a heart is a flat colour and the frame changes only when
+ * an agent's status does — a few commands a day rather than tens of thousands.
+ *
+ * Colour carries the whole message anyway: blue working, orange wants you,
+ * rainbow idle.
  *
  * Geometry was established by lighting known indices and photographing the
  * result: 100 LEDs in a 20x5 grid, `index = row * 20 + col`, no serpentine —
@@ -54,77 +63,23 @@ export const HEART_SPRITE = [
  */
 export const HEART_ORIGINS = [1, 8, 15];
 
-/**
- * Where the ripple is born, in sprite coordinates.
- *
- * The geometric centre (2,2) rather than the lit pixels' centroid: the centroid
- * sits low, because the heart's point occupies rows the lobes do not, and a
- * ripple starting there reads as coming from the bottom tip instead of the
- * middle.
- */
-export const RIPPLE_ORIGIN = { x: 2, y: 2 };
-
-/**
- * Per-state motion. Colours come from the configured scenes; this does not.
- *
- * These periods look absurdly slow written down, and they are the result of
- * watching the real panel. The constraint is that a matrix can only be driven
- * at about 8 fps before the firmware's request quota starts refusing frames, so
- * smoothness is not set by the frame rate but by **how much a pixel changes
- * between consecutive frames**. A 2.4s ripple at 8 fps moves ~13% of the
- * brightness range per frame, which the eye reads as stepping, not motion.
- *
- * Both levers here shrink that delta: a longer period spreads the cycle over
- * more frames, and a higher floor (a shallower dip) reduces the range being
- * traversed. At four frames a second the worst-case per-frame change is:
- *
- *   working    9000ms  36 frames/cycle   4.8%
- *   attention  6000ms  24 frames/cycle   5.9%
- *
- * `spread` is a separate matter and costs nothing: it sets how far the phase
- * shifts per pixel, so it controls whether the wave is *seen to travel* rather
- * than how fast a pixel changes. It was far too low at first — barely a third
- * of a cycle across the whole sprite — which made a heart breathe uniformly
- * instead of rippling, and read as no animation at all once the idle hearts
- * stopped moving and there was nothing else on the panel to compare against.
- *
- * `attention` stays the more urgent of the two by being half again as fast.
- * It used to get there by dipping deeper as well, but a deep dip needs frames
- * to cross smoothly and there are no longer enough of them — so its floor is
- * raised instead, which also leaves it the brighter of the two. Faster and
- * brighter still reads as "answer me" next to working's slow swell.
- */
-export const HEART_MOTION = {
-  working: { periodMs: 12_000, spread: 2.0, floor: 0.42 },
-  attention: { periodMs: 8000, spread: 2.2, floor: 0.55 }
-};
+/** How bright an idle heart's rainbow sits. */
+export const IDLE_BRIGHTNESS = 0.9;
 
 /**
  * Perceived brightness is not proportional to LED output.
  *
  * Halving a channel does not look half as bright — the eye follows roughly a
- * 2.2 power curve, so a dip to 40% output reads as about 66%. Scaling channels
- * directly therefore threw away most of the ripple's contrast and it was barely
- * visible on the panel even at full spread. Raising the scale by gamma before
- * it reaches the channels means a ripple that says 40% actually looks like 40%,
- * and equal steps in the ripple become equal *perceived* steps — which is also
- * what the smoothness budget is really measured in.
+ * 2.2 power curve, so an LED driven at 40% reads as about 66%. Anything meant
+ * to look like a fraction of full brightness has to be raised by gamma first,
+ * or it comes out washed out and far brighter than intended.
  */
 const GAMMA = 2.2;
 
-/** Ripple scale (perceptual) to channel multiplier (linear). */
+/** A 0..1 brightness (as perceived) to a channel multiplier (as driven). */
 export function perceptualScale(scale) {
   return Math.min(1, Math.max(0, scale)) ** GAMMA;
 }
-
-/**
- * An idle heart does not move at all.
- *
- * Motion is what the display uses to mean "something is happening here", so a
- * heart standing for nothing must be still. That also makes the panel legible
- * from the corner of your eye: any movement at all means a worktree is live.
- */
-export const IDLE_BRIGHTNESS = 0.9;
 
 function clampChannel(value) {
   return Math.min(255, Math.max(0, Math.round(value)));
@@ -164,83 +119,50 @@ export function hsvToRgb(hue, saturation = 1, value = 1) {
   return [clampChannel((r + m) * 255), clampChannel((g + m) * 255), clampChannel((b + m) * 255)];
 }
 
-/**
- * The ripple: a wave leaving the centre and travelling outward.
- *
- * Phase is `omega * t - spread * distance`, so a given phase value sits further
- * out as time advances — the crest moves away from the origin. Subtracting the
- * distance rather than adding it is the whole difference between a wave that
- * radiates and one that converges.
- *
- * Returns a 0..1 brightness scale, never reaching 0: a heart that blinks fully
- * out stops reading as a heart.
- */
-export function rippleAt(elapsedMs, x, y, { periodMs, spread, floor }) {
-  const dx = x - RIPPLE_ORIGIN.x;
-  const dy = y - RIPPLE_ORIGIN.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  const phase = (elapsedMs / periodMs) * 2 * Math.PI - distance * spread;
-  const swell = 0.5 + 0.5 * Math.sin(phase);
-  return floor + (1 - floor) * swell;
-}
-
-/** Distance from the ripple origin, exposed for the hue offset and for tests. */
-export function distanceFromOrigin(x, y) {
-  const dx = x - RIPPLE_ORIGIN.x;
-  const dy = y - RIPPLE_ORIGIN.y;
-  return Math.sqrt(dx * dx + dy * dy);
+/** A live heart is a flat colour; anything else is part of a rainbow. */
+export function isLive(state) {
+  return state === 'working' || state === 'attention';
 }
 
 /**
  * The colour of one lit sprite pixel.
  *
- * Split out so a heart's appearance can be unit-tested a pixel at a time, and
- * so the idle rainbow's two motions — brightness rippling, hue rotating — stay
- * visibly distinct from the single motion of the other two states.
+ * `rainbow` says which stretch of panel an idle heart's hue sweep is measured
+ * across: its own five columns normally, or all three hearts at once when
+ * nothing is running, so they read as a single rainbow laid over the set.
  */
-export function heartPixel(state, elapsedMs, x, y, scenes = DEFAULT_SCENES, rainbow = null) {
-  const motion = HEART_MOTION[state];
-
-  // Anything that is not live is a still rainbow. `rainbow` says which stretch
-  // of panel the hue sweep is measured across: one heart's own five columns
-  // normally, or all three at once when nothing is running.
-  if (!motion) {
+export function heartPixel(state, x, y, scenes = DEFAULT_SCENES, rainbow = null) {
+  if (!isLive(state)) {
     const { start = 0, width = SPRITE_SIZE, globalX = x } = rainbow ?? {};
     const position = width <= 0 ? 0 : (globalX - start) / width;
     return hsvToRgb(position * 360, 1, perceptualScale(IDLE_BRIGHTNESS));
   }
 
-  const scale = perceptualScale(rippleAt(elapsedMs, x, y, motion));
-  const definition =
-    state === 'attention'
-      ? (scenes?.waiting ?? DEFAULT_SCENES.waiting)
-      : (scenes?.working ?? DEFAULT_SCENES.working);
-  const [r, g, b] = hexToRgb(definition.color ?? '#ffffff');
+  const fallback = state === 'attention' ? DEFAULT_SCENES.waiting : DEFAULT_SCENES.working;
+  const definition = (state === 'attention' ? scenes?.waiting : scenes?.working) ?? fallback;
+  const [r, g, b] = hexToRgb(definition.color ?? fallback.color);
+  // The scene's own brightness still applies, so a dimmed palette stays dimmed.
+  const scale = perceptualScale((definition.brightness ?? 100) / 100);
   return [clampChannel(r * scale), clampChannel(g * scale), clampChannel(b * scale)];
 }
 
 /**
- * Composes the whole panel for one instant.
+ * Composes the whole panel.
  *
- * Each heart is drawn from its own state and its own origin, and writes only
- * into its own five columns — so one heart's animation can never disturb
- * another's, which is the property that makes the display countable at a
- * glance.
+ * Each heart draws only into its own five columns, so one heart can never
+ * disturb another — the property that makes the display countable at a glance.
  */
-export function renderHeartsFrame(hearts, { elapsedMs = 0, scenes = DEFAULT_SCENES, brightnessScale = 1 } = {}) {
+export function renderHeartsFrame(hearts, { scenes = DEFAULT_SCENES, brightnessScale = 1 } = {}) {
   const scale = Number.isFinite(brightnessScale) ? Math.min(1, Math.max(0.05, brightnessScale)) : 1;
   const pixels = new Uint8Array(MATRIX_LEDS * 3);
   const count = Math.min(HEART_COUNT, HEART_ORIGINS.length);
 
   const stateOf = (heart) => hearts?.[heart]?.state ?? 'idle';
 
-  /**
-   * With nothing running at all, the hue sweep is measured across the whole
-   * run of hearts rather than restarting in each one — so the three read as a
-   * single rainbow laid over them, not as three copies of the same rainbow.
-   */
+  // With nothing running the hue sweep spans the whole run of hearts instead of
+  // restarting in each, so they read as one rainbow rather than three copies.
   const everythingIdle = Array.from({ length: count }, (_, heart) => stateOf(heart)).every(
-    (state) => !HEART_MOTION[state]
+    (state) => !isLive(state)
   );
   const spanStart = HEART_ORIGINS[0];
   const spanWidth = HEART_ORIGINS[count - 1] + SPRITE_SIZE - spanStart;
@@ -260,7 +182,7 @@ export function renderHeartsFrame(hearts, { elapsedMs = 0, scenes = DEFAULT_SCEN
           ? { start: spanStart, width: spanWidth, globalX }
           : { start: originX, width: SPRITE_SIZE, globalX };
 
-        const [r, g, b] = heartPixel(state, elapsedMs, x, y, scenes, rainbow);
+        const [r, g, b] = heartPixel(state, x, y, scenes, rainbow);
         pixels[index * 3] = clampChannel(r * scale);
         pixels[index * 3 + 1] = clampChannel(g * scale);
         pixels[index * 3 + 2] = clampChannel(b * scale);
@@ -289,7 +211,7 @@ export function encodeFrame(pixels) {
   return Buffer.from(pixels).toString('base64');
 }
 
-/** Convenience: hearts + time straight to the string the device wants. */
+/** Convenience: hearts straight to the string the device wants. */
 export function renderHeartsPayload(hearts, options) {
   return encodeFrame(renderHeartsFrame(hearts, options));
 }

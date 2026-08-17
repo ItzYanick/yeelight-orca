@@ -208,12 +208,26 @@ export class YeelightController {
     }
   }
 
-  /** Points a panel's loop at the live hearts and the current palette. */
+  /** The hearts a panel should currently be showing. */
+  #panelHearts() {
+    return this.#hearts.length > 0 ? this.#hearts : idleHearts();
+  }
+
+  /** Options every panel frame is drawn with. */
+  #panelOptions() {
+    return { scenes: this.#config.scenes, brightnessScale: this.#config.brightnessScale };
+  }
+
+  /**
+   * Draws the current hearts and arms the repair pass.
+   *
+   * Panels are not animated — see `matrix.mjs` for why — so a frame goes out
+   * when a status changes and at essentially no other time. The heartbeat only
+   * exists to redraw if the quota refused one.
+   */
   #startPanel(panel) {
-    panel.start(() => (this.#hearts.length > 0 ? this.#hearts : idleHearts()), {
-      scenes: this.#config.scenes,
-      brightnessScale: this.#config.brightnessScale
-    });
+    panel.render(this.#panelHearts(), this.#panelOptions());
+    panel.startHeartbeat(() => this.#panelHearts(), this.#panelOptions());
   }
 
   /**
@@ -323,8 +337,12 @@ export class YeelightController {
 
     const slots = this.#heartSlots();
     for (const [key, device] of this.#devices) {
-      // A panel being animated frame by frame must not also be sent scenes.
-      if (this.#panels.has(key)) continue;
+      // A panel draws hearts itself and must not also be sent scenes.
+      const panel = this.#panels.get(key);
+      if (panel) {
+        if (changed) panel.render(this.#panelHearts(), this.#panelOptions());
+        continue;
+      }
       device.setScene(this.#sceneForDevice(device, projects, slots.get(key)));
     }
 

@@ -188,8 +188,8 @@ node bin/orca-yeelight.mjs hearts   # preview: busy, waiting, then all idle
 ### On a matrix panel
 
 If one of your lights is a **Cube Lite** (or another matrix panel), hearts mode
-stops being a metaphor and draws three actual hearts on it — one per agent, side
-by side, each rippling from its own centre outward.
+stops being a metaphor and draws three actual hearts on it — one per worktree,
+side by side.
 
 Detection is automatic. `support` is empty on these models so nothing can be
 feature-detected the normal way; instead each light is asked whether it accepts
@@ -197,22 +197,31 @@ feature-detected the normal way; instead each light is asked whether it accepts
 bulbs keep the colour-flow behaviour above unchanged.
 
 ```bash
-node bin/orca-yeelight.mjs panel   # three animated hearts, 60 seconds
+node bin/orca-yeelight.mjs panel   # draw the current hearts on the panel
 ```
 
-Two things are worth knowing before you rely on it:
+**The hearts do not animate, and that is deliberate.** Direct mode means the
+host draws every frame, so anything moving has to be pushed continuously — and
+these panels do not survive that. Two units stopped responding entirely under a
+steady frame loop: they accept commands, acknowledge nothing, display nothing,
+and only come back when unplugged. The second one did it while being driven at
+one frame per second, inside every rate the firmware appeared to tolerate.
 
-- **A panel only animates while Orca is running.** Its LAN protocol has exactly
-  one effect mode, `direct`, which means the host draws every frame. There is no
-  way to hand it an animation and walk away — the effects the Yeelight app
-  leaves behind are pushed through the cloud, not through anything reachable
-  here. When the plugin stops it blanks the panel rather than leaving it frozen
-  mid-ripple.
-- **The animation is deliberately slow.** The firmware enforces a request quota
-  per connection, so frames are spread over a pool of eight and still only reach
-  about 8 fps. Smoothness therefore depends on how far a pixel moves between
-  frames, which is why the ripple periods are measured in whole seconds. Making
-  them faster brings the stepping back; there is a test that says so.
+So a heart is a flat colour and a frame is sent only when a worktree's status
+changes — a few dozen commands a day rather than tens of thousands. Colour
+carries the whole message regardless: blue working, orange wants you, rainbow
+idle. A once-a-minute redraw repairs the odd frame the request quota refuses.
+
+Other things worth knowing if you work on this:
+
+- The panel accepts exactly **three** simultaneous connections. A fourth is
+  closed the instant it opens. Opening more in a loop is what wedged the first
+  unit.
+- Frames are `update_leds` with base64, three bytes per LED, 100 LEDs in a 20×5
+  grid, `index = row * 20 + col`, row 0 at the **bottom**. 175 LEDs or more
+  returns `error 5 memory exhausted`.
+- `set_music` is not implemented on this model, so the documented escape from
+  the rate limit is unavailable.
 
 ## Multiple projects
 
@@ -314,8 +323,8 @@ therefore a static reference rather than a live dashboard.
 | --- | --- |
 | `src/protocol.mjs` | wire format, colour maths, scene → commands (pure) |
 | `src/scene.mjs` | status tracking and status → scene (pure) |
-| `src/matrix.mjs` | hearts → one panel frame, sprites and ripple (pure) |
-| `src/matrix-driver.mjs` | direct mode, the connection pool, the frame loop |
+| `src/matrix.mjs` | hearts → one panel frame, sprites and colour (pure) |
+| `src/matrix-driver.mjs` | direct mode, the connection pool, frame delivery |
 | `src/discovery.mjs` | SSDP scan on UDP 1982 |
 | `src/device.mjs` | one device: connection, reconnect, rate limit |
 | `src/controller.mjs` | device set + status → light, shared with the CLI |
@@ -328,7 +337,7 @@ therefore a static reference rather than a live dashboard.
 npm test
 ```
 
-120 tests. The protocol and scene layers are pure and tested directly; the
+123 tests. The protocol and scene layers are pure and tested directly; the
 integration suite drives the real `activate()` entry point against a fake bulb
 that speaks the actual protocol, asserting on the commands a device would
 receive — including a regression test for firmware that ignores `get_prop`.
