@@ -76,26 +76,30 @@ export const RIPPLE_ORIGIN = { x: 2, y: 2 };
  *
  * Both levers here shrink that delta: a longer period spreads the cycle over
  * more frames, and a higher floor (a shallower dip) reduces the range being
- * traversed. At these values the worst-case per-frame change is:
+ * traversed. At four frames a second the worst-case per-frame change is:
  *
- *   working    9000ms  72 frames/cycle   2.4%
- *   attention  5000ms  40 frames/cycle   5.3%
- *   idle      12000ms  96 frames/cycle   1.6%
+ *   working    9000ms  36 frames/cycle   4.8%
+ *   attention  6000ms  24 frames/cycle   5.9%
  *
- * `attention` is deliberately the twitchiest of the three — it is the one state
- * meant to catch your eye, and its faster, deeper ripple is what distinguishes
- * it from `working` across the room.
+ * `attention` stays the more urgent of the two by being half again as fast.
+ * It used to get there by dipping deeper as well, but a deep dip needs frames
+ * to cross smoothly and there are no longer enough of them — so its floor is
+ * raised instead, which also leaves it the brighter of the two. Faster and
+ * brighter still reads as "answer me" next to working's slow swell.
  */
 export const HEART_MOTION = {
   working: { periodMs: 9000, spread: 0.9, floor: 0.45 },
-  attention: { periodMs: 5000, spread: 1.0, floor: 0.32 },
-  idle: { periodMs: 12_000, spread: 0.7, floor: 0.5 }
+  attention: { periodMs: 6000, spread: 1.0, floor: 0.55 }
 };
 
-/** Hue degrees swept per second by an idle heart's rainbow. */
-const IDLE_HUE_DEGREES_PER_SECOND = 70;
-/** Hue degrees added per pixel of distance, so the rainbow ripples outward. */
-const IDLE_HUE_PER_PIXEL = 26;
+/**
+ * An idle heart does not move at all.
+ *
+ * Motion is what the display uses to mean "something is happening here", so a
+ * heart standing for nothing must be still. That also makes the panel legible
+ * from the corner of your eye: any movement at all means a worktree is live.
+ */
+export const IDLE_BRIGHTNESS = 0.8;
 
 function clampChannel(value) {
   return Math.min(255, Math.max(0, Math.round(value)));
@@ -169,16 +173,19 @@ export function distanceFromOrigin(x, y) {
  * so the idle rainbow's two motions — brightness rippling, hue rotating — stay
  * visibly distinct from the single motion of the other two states.
  */
-export function heartPixel(state, elapsedMs, x, y, scenes = DEFAULT_SCENES) {
-  const motion = HEART_MOTION[state] ?? HEART_MOTION.idle;
-  const scale = rippleAt(elapsedMs, x, y, motion);
+export function heartPixel(state, elapsedMs, x, y, scenes = DEFAULT_SCENES, rainbow = null) {
+  const motion = HEART_MOTION[state];
 
-  if (state === 'idle') {
-    const hue =
-      (elapsedMs / 1000) * IDLE_HUE_DEGREES_PER_SECOND + distanceFromOrigin(x, y) * IDLE_HUE_PER_PIXEL;
-    return hsvToRgb(hue, 1, scale);
+  // Anything that is not live is a still rainbow. `rainbow` says which stretch
+  // of panel the hue sweep is measured across: one heart's own five columns
+  // normally, or all three at once when nothing is running.
+  if (!motion) {
+    const { start = 0, width = SPRITE_SIZE, globalX = x } = rainbow ?? {};
+    const position = width <= 0 ? 0 : (globalX - start) / width;
+    return hsvToRgb(position * 360, 1, IDLE_BRIGHTNESS);
   }
 
+  const scale = rippleAt(elapsedMs, x, y, motion);
   const definition =
     state === 'attention'
       ? (scenes?.waiting ?? DEFAULT_SCENES.waiting)
@@ -198,17 +205,37 @@ export function heartPixel(state, elapsedMs, x, y, scenes = DEFAULT_SCENES) {
 export function renderHeartsFrame(hearts, { elapsedMs = 0, scenes = DEFAULT_SCENES, brightnessScale = 1 } = {}) {
   const scale = Number.isFinite(brightnessScale) ? Math.min(1, Math.max(0.05, brightnessScale)) : 1;
   const pixels = new Uint8Array(MATRIX_LEDS * 3);
+  const count = Math.min(HEART_COUNT, HEART_ORIGINS.length);
 
-  for (let heart = 0; heart < Math.min(HEART_COUNT, HEART_ORIGINS.length); heart += 1) {
-    const state = hearts?.[heart]?.state ?? 'idle';
+  const stateOf = (heart) => hearts?.[heart]?.state ?? 'idle';
+
+  /**
+   * With nothing running at all, the hue sweep is measured across the whole
+   * run of hearts rather than restarting in each one — so the three read as a
+   * single rainbow laid over them, not as three copies of the same rainbow.
+   */
+  const everythingIdle = Array.from({ length: count }, (_, heart) => stateOf(heart)).every(
+    (state) => !HEART_MOTION[state]
+  );
+  const spanStart = HEART_ORIGINS[0];
+  const spanWidth = HEART_ORIGINS[count - 1] + SPRITE_SIZE - spanStart;
+
+  for (let heart = 0; heart < count; heart += 1) {
+    const state = stateOf(heart);
     const originX = HEART_ORIGINS[heart];
 
     for (let y = 0; y < SPRITE_SIZE; y += 1) {
       for (let x = 0; x < SPRITE_SIZE; x += 1) {
         if (!HEART_SPRITE[y][x]) continue;
-        const index = indexFor(originX + x, y);
+        const globalX = originX + x;
+        const index = indexFor(globalX, y);
         if (index < 0) continue;
-        const [r, g, b] = heartPixel(state, elapsedMs, x, y, scenes);
+
+        const rainbow = everythingIdle
+          ? { start: spanStart, width: spanWidth, globalX }
+          : { start: originX, width: SPRITE_SIZE, globalX };
+
+        const [r, g, b] = heartPixel(state, elapsedMs, x, y, scenes, rainbow);
         pixels[index * 3] = clampChannel(r * scale);
         pixels[index * 3 + 1] = clampChannel(g * scale);
         pixels[index * 3 + 2] = clampChannel(b * scale);

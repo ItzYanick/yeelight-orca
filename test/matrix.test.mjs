@@ -126,9 +126,12 @@ describe('ripple', () => {
     assert.ok(Math.abs(first - later) < 1e-9);
   });
 
-  it('pulses attention faster than working, and idle slowest of all', () => {
+  it('pulses attention faster than working, so the two never read alike', () => {
     assert.ok(HEART_MOTION.attention.periodMs < HEART_MOTION.working.periodMs);
-    assert.ok(HEART_MOTION.idle.periodMs > HEART_MOTION.working.periodMs);
+  });
+
+  it('gives an idle heart no motion at all', () => {
+    assert.equal(HEART_MOTION.idle, undefined, 'stillness is what idle means here');
   });
 
   /**
@@ -147,7 +150,10 @@ describe('ripple', () => {
         `${state} changes ${(maxDelta * 100).toFixed(1)}% per frame at ${DEFAULT_FPS} fps; ` +
           'slow the period or raise the floor'
       );
-      assert.ok(framesPerCycle >= 30, `${state} has only ${framesPerCycle} frames per cycle`);
+      // A loose sanity bound only. The per-frame delta above is the measure
+      // that actually predicted stepping on real hardware; frames-per-cycle
+      // was a second guess from when the panel was being driven twice as fast.
+      assert.ok(framesPerCycle >= 20, `${state} has only ${framesPerCycle} frames per cycle`);
     }
   });
 });
@@ -176,10 +182,20 @@ describe('heartPixel', () => {
     assert.ok(sawGreen);
   });
 
-  it('rotates hue for an idle heart instead of pulsing one colour', () => {
+  it('holds an idle heart perfectly still', () => {
+    // Motion is the display's word for "something is happening here", so a
+    // heart standing for nothing must not move.
     const early = heartPixel('idle', 0, 2, 2);
-    const later = heartPixel('idle', 1200, 2, 2);
-    assert.notDeepEqual(early, later, 'an idle heart should keep changing colour');
+    for (const elapsed of [250, 1200, 7000, 60_000]) {
+      assert.deepEqual(heartPixel('idle', elapsed, 2, 2), early, `moved at ${elapsed}ms`);
+    }
+  });
+
+  it('sweeps hue across an idle heart', () => {
+    const span = { start: 0, width: SPRITE_SIZE };
+    const left = heartPixel('idle', 0, 0, 2, DEFAULT_SCENES, { ...span, globalX: 0 });
+    const right = heartPixel('idle', 0, 4, 2, DEFAULT_SCENES, { ...span, globalX: 4 });
+    assert.notDeepEqual(left, right, 'a rainbow must change colour across the heart');
   });
 });
 
@@ -254,6 +270,61 @@ describe('renderHeartsFrame', () => {
       if (fr + fg + fb > 40) compared += 1;
     }
     assert.ok(compared > 0, 'the comparison needs some lit pixels');
+  });
+
+  /**
+   * With nothing running, the three hearts must read as one rainbow laid over
+   * them rather than three copies of the same one.
+   */
+  it('spans a single rainbow across all three hearts when everything is idle', () => {
+    const frame = renderHeartsFrame(idleHearts());
+
+    // The hue at each heart's leftmost lit pixel, taken from the same row.
+    const firstLitColumn = HEART_SPRITE[1].indexOf(1);
+    const starts = HEART_ORIGINS.map((origin) =>
+      ledAt(frame, indexFor(origin + firstLitColumn, 1))
+    );
+
+    assert.notDeepEqual(starts[0], starts[1], 'each heart must start on its own hue');
+    assert.notDeepEqual(starts[1], starts[2], 'each heart must start on its own hue');
+
+    // Continuity: the sweep carries on across the gaps rather than restarting,
+    // so the last pixel of one heart is closer in hue to the first pixel of the
+    // next than to its own starting hue.
+    const hueOf = ([r, g, b]) => {
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      if (max === min) return 0;
+      const d = max - min;
+      const h =
+        max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      return h * 60;
+    };
+    const hues = starts.map(hueOf);
+    assert.ok(hues[1] > hues[0], 'hue should advance from the first heart to the second');
+    assert.ok(hues[2] > hues[1], 'and again to the third');
+  });
+
+  it('gives each idle heart its own rainbow while another is live', () => {
+    const mixed = renderHeartsFrame(hearts('working', 'idle', 'idle'));
+    const firstLitColumn = HEART_SPRITE[1].indexOf(1);
+
+    // The two idle hearts are no longer part of one span, so each restarts the
+    // sweep and they begin on the same hue as each other.
+    const second = ledAt(mixed, indexFor(HEART_ORIGINS[1] + firstLitColumn, 1));
+    const third = ledAt(mixed, indexFor(HEART_ORIGINS[2] + firstLitColumn, 1));
+    assert.deepEqual(second, third, 'each idle heart sweeps its own five columns');
+
+    // And that is genuinely different from the spanning arrangement.
+    const allIdle = renderHeartsFrame(idleHearts());
+    const spannedSecond = ledAt(allIdle, indexFor(HEART_ORIGINS[1] + firstLitColumn, 1));
+    assert.notDeepEqual(second, spannedSecond);
+  });
+
+  it('holds the whole panel still when nothing is running', () => {
+    const early = renderHeartsFrame(idleHearts(), { elapsedMs: 0 });
+    const later = renderHeartsFrame(idleHearts(), { elapsedMs: 9000 });
+    assert.deepEqual([...early], [...later], 'an all-idle panel is a still image');
   });
 
   it('treats a missing or short hearts list as idle', () => {

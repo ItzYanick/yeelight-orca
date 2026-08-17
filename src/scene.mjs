@@ -197,25 +197,52 @@ export class AgentStatusTracker {
   }
 
   /**
-   * Assigns the hearts to agents, one each.
+   * Assigns the hearts to worktrees, one each.
    *
-   * Ranked by what the heart would say first and recency second: with more
-   * agents alive than hearts, spending a heart on one that just finished would
-   * hide one that is still running, and hiding live work is the single thing
-   * this display must never do. Unfilled slots come back as idle hearts, so the
-   * result is always `count` wide and the room always shows a full set.
+   * A heart stands for a place work is happening, not for a single pane: two
+   * agents in the same worktree are one thing you look after, and giving them
+   * two hearts would overstate how much is going on. Panes are therefore
+   * collapsed per worktree, and the worktree takes its most urgent pane's
+   * meaning — a question anywhere in it turns the whole heart orange.
+   *
+   * Only worktrees that are actually doing something take a heart. An idle or
+   * finished worktree does not occupy a slot, so a heart is never spent saying
+   * "nothing here" while somewhere else is live. Slots nobody claims come back
+   * as idle hearts, which is also what you get when fewer than three worktrees
+   * are open at all.
+   *
+   * Ranked by urgency first and recency second: with more than three live
+   * worktrees, the ones wanting an answer are the ones worth the space.
    */
   hearts(now = Date.now(), count = HEART_COUNT) {
     this.prune(now);
 
-    const ranked = [...this.#panes.entries()]
-      .map(([paneKey, pane]) => ({
-        paneKey,
-        state: heartStateFor(pane.state),
-        agentState: pane.state,
-        label: parseWorktreeId(pane.worktreeId).label,
-        receivedAt: pane.receivedAt
+    const grouped = new Map();
+    for (const pane of this.#panes.values()) {
+      const identity = parseWorktreeId(pane.worktreeId);
+      const worktree = grouped.get(identity.key) ?? {
+        key: identity.key,
+        label: identity.label,
+        states: new Set(),
+        panes: 0,
+        receivedAt: 0
+      };
+      worktree.states.add(pane.state);
+      worktree.panes += 1;
+      // A worktree is as recent as its most recently active pane.
+      worktree.receivedAt = Math.max(worktree.receivedAt, pane.receivedAt);
+      grouped.set(identity.key, worktree);
+    }
+
+    const active = [...grouped.values()]
+      .map(({ key, label, states, panes, receivedAt }) => ({
+        key,
+        label,
+        panes,
+        receivedAt,
+        state: heartStateFor(STATUS_PRIORITY.find((status) => states.has(status)))
       }))
+      .filter((worktree) => worktree.state !== IDLE_STATUS)
       .sort(
         (a, b) =>
           HEART_STATES.indexOf(a.state) - HEART_STATES.indexOf(b.state) ||
@@ -223,13 +250,13 @@ export class AgentStatusTracker {
       );
 
     return Array.from({ length: Math.max(1, Math.round(count)) }, (_, index) => {
-      const agent = ranked[index];
+      const worktree = active[index];
       return {
         index,
-        state: agent?.state ?? IDLE_STATUS,
-        paneKey: agent?.paneKey ?? null,
-        label: agent?.label ?? null,
-        agentState: agent?.agentState ?? null
+        state: worktree?.state ?? IDLE_STATUS,
+        key: worktree?.key ?? null,
+        label: worktree?.label ?? null,
+        panes: worktree?.panes ?? 0
       };
     });
   }
@@ -343,14 +370,14 @@ export function heartStateFor(agentState) {
   return IDLE_STATUS;
 }
 
-/** A full set of unassigned hearts — what an empty tracker looks like. */
+/** A full set of unclaimed hearts — what an empty tracker looks like. */
 export function idleHearts(count = HEART_COUNT) {
   return Array.from({ length: Math.max(1, Math.round(count)) }, (_, index) => ({
     index,
     state: IDLE_STATUS,
-    paneKey: null,
+    key: null,
     label: null,
-    agentState: null
+    panes: 0
   }));
 }
 

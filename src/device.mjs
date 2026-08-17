@@ -150,7 +150,7 @@ export class YeelightDevice {
   }
 
   #scheduleReconnect() {
-    if (this.#closed || this.#reconnectTimer) return;
+    if (this.#closed || this.#suspended || this.#reconnectTimer) return;
     const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** this.#reconnectAttempts);
     this.#reconnectAttempts += 1;
     this.#reconnectTimer = setTimeout(() => {
@@ -211,6 +211,14 @@ export class YeelightDevice {
     if (this.#writeTimer) clearTimeout(this.#writeTimer);
     this.#writeTimer = null;
     this.#desiredScene = null;
+
+    // Drop the connection too. These panels accept only a handful of
+    // simultaneous clients, and the frame pool needs nearly all of them: an
+    // idle socket held here is enough to push the device over its limit, at
+    // which point it starts closing connections and this class dutifully
+    // reconnects in a loop. `#scheduleReconnect` checks `#suspended`, so
+    // destroying the socket here does not start that cycle.
+    this.#socket?.destroy();
   }
 
   /**
@@ -221,6 +229,9 @@ export class YeelightDevice {
   resume() {
     this.#suspended = false;
     this.#appliedFingerprint = null;
+    this.connect().catch(() => {
+      // `close` fires on failure and schedules the next attempt.
+    });
   }
 
   #scheduleWrite() {

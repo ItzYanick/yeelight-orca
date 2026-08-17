@@ -44,7 +44,7 @@ describe('AgentStatusTracker#hearts', () => {
     );
   });
 
-  it('gives one heart to each agent and names its project', () => {
+  it('gives one heart to each worktree and names it', () => {
     const tracker = new AgentStatusTracker();
     tracker.update({ paneKey: 'a', state: 'working', worktreeId: 'repo::/src/alpha', receivedAt: T0 });
     tracker.update({ paneKey: 'b', state: 'waiting', worktreeId: 'repo::/src/beta', receivedAt: T0 });
@@ -55,33 +55,73 @@ describe('AgentStatusTracker#hearts', () => {
       ['attention', 'working', 'idle']
     );
     assert.equal(hearts[0].label, 'beta');
-    assert.equal(hearts[0].agentState, 'waiting');
-    assert.equal(hearts[2].paneKey, null, 'the unfilled slot belongs to no agent');
+    assert.equal(hearts[1].label, 'alpha');
+    assert.equal(hearts[2].key, null, 'the unclaimed slot belongs to no worktree');
   });
 
-  it('never spends a heart on a finished agent while one is still running', () => {
+  it('collapses several agents in one worktree into a single heart', () => {
     const tracker = new AgentStatusTracker();
-    tracker.update({ paneKey: 'old', state: 'working', receivedAt: T0 });
-    // Three fresher panes that have all stopped doing anything.
+    for (const paneKey of ['a', 'b', 'c']) {
+      tracker.update({ paneKey, state: 'working', worktreeId: 'repo::/src/alpha', receivedAt: T0 });
+    }
+
+    const hearts = tracker.hearts(T0);
+    assert.deepEqual(
+      hearts.map((heart) => heart.state),
+      ['working', 'idle', 'idle'],
+      'one worktree is one heart however many agents are in it'
+    );
+    assert.equal(hearts[0].panes, 3);
+  });
+
+  it('turns a whole worktree orange when any agent in it wants an answer', () => {
+    const tracker = new AgentStatusTracker();
+    tracker.update({ paneKey: 'a', state: 'working', worktreeId: 'repo::/src/alpha', receivedAt: T0 });
+    tracker.update({ paneKey: 'b', state: 'blocked', worktreeId: 'repo::/src/alpha', receivedAt: T0 });
+
+    assert.equal(tracker.hearts(T0)[0].state, 'attention');
+  });
+
+  it('leaves a slot idle rather than spending it on a finished worktree', () => {
+    const tracker = new AgentStatusTracker();
+    tracker.update({ paneKey: 'old', state: 'working', worktreeId: 'r::/w/live', receivedAt: T0 });
+    // Three fresher worktrees that have all stopped doing anything.
     for (const paneKey of ['x', 'y', 'z']) {
-      tracker.update({ paneKey, state: 'done', receivedAt: T0 + 1000 });
+      tracker.update({ paneKey, state: 'done', worktreeId: `r::/w/${paneKey}`, receivedAt: T0 + 1000 });
     }
 
     const hearts = tracker.hearts(T0 + 1000);
-    assert.equal(hearts[0].state, 'working');
-    assert.equal(hearts[0].paneKey, 'old');
+    assert.deepEqual(
+      hearts.map((heart) => heart.state),
+      ['working', 'idle', 'idle'],
+      'finished worktrees must not crowd out a live one'
+    );
+    assert.equal(hearts[0].label, 'live');
   });
 
-  it('breaks ties by recency, so the hearts follow the newest agents', () => {
+  it('keeps only the three most recent worktrees when more are live', () => {
     const tracker = new AgentStatusTracker();
-    tracker.update({ paneKey: 'old', state: 'working', receivedAt: T0 });
-    tracker.update({ paneKey: 'new', state: 'working', receivedAt: T0 + 5000 });
-    assert.equal(tracker.hearts(T0 + 5000)[0].paneKey, 'new');
+    const names = ['one', 'two', 'three', 'four', 'five'];
+    names.forEach((name, index) => {
+      tracker.update({
+        paneKey: `p-${name}`,
+        state: 'working',
+        worktreeId: `r::/w/${name}`,
+        receivedAt: T0 + index * 1000
+      });
+    });
+
+    const hearts = tracker.hearts(T0 + 5000);
+    assert.deepEqual(
+      hearts.map((heart) => heart.label),
+      ['five', 'four', 'three'],
+      'newest first, and only three fit'
+    );
   });
 
-  it('drops agents that went stale', () => {
+  it('drops worktrees that went stale', () => {
     const tracker = new AgentStatusTracker({ staleAfterMs: 60_000 });
-    tracker.update({ paneKey: 'a', state: 'working', receivedAt: T0 });
+    tracker.update({ paneKey: 'a', state: 'working', worktreeId: 'r::/w/alpha', receivedAt: T0 });
     assert.equal(tracker.hearts(T0 + 61_000)[0].state, 'idle');
   });
 });

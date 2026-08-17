@@ -24,21 +24,34 @@ import { blankPayload, renderHeartsPayload } from './matrix.mjs';
 /**
  * Sockets to spread frames across, and the rate to aim for.
  *
- * Measured on a Cube Lite, 40s per setting, eight sockets throughout:
+ * Throughput measurements on a Cube Lite, 40s per setting with eight sockets:
  *
  *   8 fps (1.00/s per socket)   9% rejected   7.2 fps effective
  *   6 fps (0.75/s per socket)   3% rejected   5.8 fps effective
  *   5 fps (0.63/s per socket)   0% rejected   5.0 fps effective
  *
- * 8 fps is chosen over the rejection-free 5 fps because a dropped frame costs
- * nothing: every frame is absolute, so a rejected one is simply skipped and the
- * next is already correct. More updates reach the panel at 8 fps than at 5,
- * drops included, and the ripple is visibly smoother for it.
+ * Those numbers are real but they are not the whole story, and chasing them
+ * was a mistake. Sustained over a longer session, eight sockets — plus the
+ * ordinary device connection reconnecting alongside them — drove the firmware
+ * into a state where it accepted every TCP connection and closed it again
+ * within 20ms, and stayed there through several minutes of complete silence.
+ * Only a power cycle cleared it.
+ *
+ * So the limit that matters is not how many frames the device will accept in a
+ * burst; it is how much connection churn it will tolerate for hours. These
+ * defaults are deliberately well inside that: four sockets, four frames a
+ * second. The ripple was tuned to stay smooth at low frame rates anyway, and a
+ * still panel sends almost nothing because unchanged frames are skipped.
  */
-export const DEFAULT_POOL_SIZE = 8;
-export const DEFAULT_FPS = 8;
+export const DEFAULT_POOL_SIZE = 4;
+export const DEFAULT_FPS = 4;
 
 const CONNECT_TIMEOUT_MS = 5000;
+/**
+ * How often an unchanged frame is resent anyway, so a still panel recovers
+ * from a frame the quota happened to reject.
+ */
+const RESEND_INTERVAL_MS = 3000;
 /** How long to wait for `activate_fx_mode` to be acknowledged when probing. */
 const PROBE_TIMEOUT_MS = 3000;
 
@@ -109,7 +122,6 @@ export class MatrixPanel {
   #host;
   #port;
   #pool = [];
-  #control = null;
   #timer = null;
   #nextSocket = 0;
   #id = 1;
@@ -120,6 +132,8 @@ export class MatrixPanel {
 
   #sent = 0;
   #rejected = 0;
+  #lastPayload = null;
+  #lastPushAt = 0;
 
   #blankAttempts;
   #blankSpacingMs;
@@ -147,14 +161,14 @@ export class MatrixPanel {
     return { sent: this.#sent, rejected: this.#rejected };
   }
 
-  /** Opens the control connection, enters direct mode, and fills the pool. */
+  /**
+   * Fills the frame pool and puts the panel into direct mode.
+   *
+   * Setup goes over the first pooled socket rather than a connection of its
+   * own: these panels tolerate only a handful of simultaneous clients, and one
+   * socket held for two commands is one the pool cannot have.
+   */
   async open() {
-    this.#control = await connect(this.#host, this.#port);
-    this.#watch(this.#control);
-
-    this.#send(this.#control, 'set_power', ['on', 'smooth', 300]);
-    this.#send(this.#control, 'activate_fx_mode', [{ mode: 'direct' }]);
-
     for (let n = 0; n < this.#poolSize; n += 1) {
       try {
         const socket = await connect(this.#host, this.#port);
@@ -166,6 +180,9 @@ export class MatrixPanel {
     }
 
     if (this.#pool.length === 0) throw new Error('no frame connections could be opened');
+
+    this.#send(this.#pool[0], 'set_power', ['on', 'smooth', 300]);
+    this.#send(this.#pool[0], 'activate_fx_mode', [{ mode: 'direct' }]);
     this.#log(`matrix ready on ${this.#host} (${this.#pool.length} frame connections)`);
   }
 
@@ -189,9 +206,37 @@ export class MatrixPanel {
     socket.write(`${JSON.stringify({ id: this.#id++, method, params })}\r\n`);
   }
 
-  /** Pushes one already-encoded frame, round-robin across the pool. */
-  push(payload) {
-    const socket = this.#pool[this.#nextSocket % this.#pool.length];
+  /**
+   * Pushes one already-encoded frame, round-robin across the pool.
+   *
+   * An unchanged frame is skipped: a panel with nothing running shows a still
+   * rainbow, and resending it eight times a second would spend the whole
+   * request budget saying nothing — leaving none for the moment something
+   * actually changes. It is still resent occasionally, because a frame the
+   * quota rejected leaves the panel showing something stale and no later frame
+   * would differ enough to correct it.
+   */
+  push(payload, { force = false } = {}) {
+    const now = Date.now();
+    const unchanged = payload === this.#lastPayload;
+    if (!force && unchanged && now - this.#lastPushAt < RESEND_INTERVAL_MS) return;
+
+    // A socket the device closed is not replaced: reconnecting into a firmware
+    // that is already unhappy is what caused trouble in the first place. The
+    // loop simply runs on whatever is left.
+    const alive = this.#pool.filter((socket) => !socket.destroyed);
+    if (alive.length === 0) {
+      if (this.#timer) {
+        this.#log('every frame connection was closed by the device; stopping the loop');
+        this.stop();
+      }
+      return;
+    }
+
+    this.#lastPayload = payload;
+    this.#lastPushAt = now;
+
+    const socket = alive[this.#nextSocket % alive.length];
     this.#nextSocket += 1;
     this.#sent += 1;
     this.#send(socket, 'update_leds', [payload]);
@@ -229,7 +274,9 @@ export class MatrixPanel {
 
   /** Queues one blank frame. Prefer `blankAndFlush` when shutting down. */
   blank() {
-    this.push(blankPayload());
+    // Forced: blanking relies on repeated identical sends to beat the quota,
+    // which is exactly what the duplicate check would suppress.
+    this.push(blankPayload(), { force: true });
   }
 
   /**
@@ -260,7 +307,5 @@ export class MatrixPanel {
     if (blank && this.#pool.length > 0) await this.blankAndFlush();
     for (const socket of this.#pool) socket.destroy();
     this.#pool = [];
-    this.#control?.destroy();
-    this.#control = null;
   }
 }
