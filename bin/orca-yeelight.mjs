@@ -36,6 +36,7 @@ Usage:
                                     (${EFFECTS.join(' | ')})
   orca-yeelight projects [n]        Preview the multi-project cycle with n projects
   orca-yeelight hearts              Preview hearts mode: busy, waiting, then all idle
+  orca-yeelight panel [host]        Draw three animated hearts on a matrix panel
   orca-yeelight props               Print live properties of each light
   orca-yeelight off                 Turn every light off
   orca-yeelight --help
@@ -216,6 +217,60 @@ async function main(argv) {
       controller.refresh();
       await new Promise((resolve) => setTimeout(resolve, 15_000));
     });
+    return;
+  }
+
+  if (command === 'panel') {
+    const { MatrixPanel, probeMatrix } = await import('../src/matrix-driver.mjs');
+
+    let host = rest[0];
+    if (!host) {
+      const found = await discoverDevices({ log: (message) => console.error(`[scan] ${message}`) });
+      host = found[0]?.host;
+      if (!host) {
+        console.error('No lights found. Pass the panel\'s IP: orca-yeelight panel 192.168.1.50');
+        process.exitCode = 1;
+        return;
+      }
+      log(`using ${host}`);
+    }
+
+    if (!(await probeMatrix(host))) {
+      console.error(
+        `${host} did not accept direct mode, so it is not a matrix panel.\n` +
+          'Hearts on a plain bulb are previewed with: orca-yeelight hearts'
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const config = await loadConfig({ log: (message) => console.error(`[config] ${message}`) });
+    const panel = new MatrixPanel({ host }, { log: (message) => console.error(`[panel] ${message}`) });
+    await panel.open();
+
+    // One heart per state so all three animations can be judged side by side.
+    const demo = [
+      { index: 0, state: 'working' },
+      { index: 1, state: 'attention' },
+      { index: 2, state: 'idle' }
+    ];
+    panel.start(() => demo, {
+      scenes: config.scenes,
+      brightnessScale: config.brightnessScale
+    });
+
+    log('Three hearts: blue (working), yellow (wants you), rainbow (idle).');
+    log('The ripple starts at each heart\'s centre and travels outward. Ctrl-C to stop.');
+
+    const finish = () => {
+      const { sent, rejected } = panel.stats;
+      log(`\n${sent} frames sent, ${rejected} rejected by the device's quota.`);
+      panel.close();
+      process.exit(0);
+    };
+    process.on('SIGINT', finish);
+    await new Promise((resolve) => setTimeout(resolve, 60_000));
+    finish();
     return;
   }
 
