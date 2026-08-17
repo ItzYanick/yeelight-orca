@@ -8,9 +8,11 @@
 
 import { YeelightDevice } from './device.mjs';
 import { discoverDevices } from './discovery.mjs';
+import { MatrixPanel, probeMatrix } from './matrix-driver.mjs';
 import {
   AgentStatusTracker,
   IDLE_STATUS,
+  idleHearts,
   resolveHeartsScene,
   resolveProjectCycleScene,
   resolveScene
@@ -28,13 +30,20 @@ export class YeelightController {
   #projects = [];
   #hearts = [];
   #signature = '';
+  /** Device keys that answered the direct-mode probe: matrix panels. */
+  #matrixKeys = new Set();
+  /** Live frame loops, keyed the same way. A panel here owns its light. */
+  #panels = new Map();
+  /** Frame rate, pool size and blanking schedule; overridden by the tests. */
+  #matrixOptions = {};
   #log;
   #onStatusChange;
 
-  constructor(config, { log = () => {}, onStatusChange = () => {} } = {}) {
+  constructor(config, { log = () => {}, onStatusChange = () => {}, matrix = {} } = {}) {
     this.#config = config;
     this.#log = log;
     this.#onStatusChange = onStatusChange;
+    this.#matrixOptions = matrix;
     this.#tracker = new AgentStatusTracker(config.timing);
   }
 
@@ -117,7 +126,94 @@ export class YeelightController {
 
     // Bring the new light straight to the current scene.
     device.setScene(this.#sceneForDevice(device, this.#projects, this.#heartSlots().get(key)));
+
+    // Is it a panel? `support` is empty on these models, so the only way to
+    // know is to ask whether it accepts direct mode. Done off the hot path
+    // because it costs a connection and a round trip.
+    probeMatrix(device.host, device.port)
+      .then((isMatrix) => {
+        // The device may have been replaced or dropped while we were asking.
+        if (!isMatrix || this.#devices.get(key) !== device) return;
+        this.#matrixKeys.add(key);
+        this.#log(`${device.label} is a matrix panel; hearts can be drawn on it`);
+        this.#syncPanels();
+        // The probe leaves the panel in direct mode with nothing to show, so
+        // repaint: either the frame loop takes over, or a normal scene does.
+        this.refresh();
+      })
+      .catch(() => {
+        // A light that cannot be probed is simply treated as a bulb.
+      });
+
     return device;
+  }
+
+  /** Hearts are only drawn as sprites when the mode is actually on. */
+  #heartsActive() {
+    return Boolean(this.#config.enabled && this.#config.hearts);
+  }
+
+  /**
+   * Starts a frame loop for every matrix panel, or tears them all down.
+   *
+   * A panel cannot be driven by both paths at once: pushing a scene would take
+   * it out of direct mode mid-animation, and the frame loop would fight it
+   * back. So a light with a live panel here is skipped by `refresh`.
+   */
+  #syncPanels() {
+    const wanted = this.#heartsActive() ? this.#matrixKeys : new Set();
+
+    for (const [key, panel] of this.#panels) {
+      if (wanted.has(key) && this.#devices.has(key)) continue;
+      this.#panels.delete(key);
+      // Blanks on the way out, so a stopped panel goes dark rather than
+      // freezing on half a ripple.
+      void panel.close().catch(() => {});
+      this.#devices.get(key)?.resume();
+      this.#log('stopped driving a panel; it will follow normal scenes again');
+    }
+
+    for (const key of wanted) {
+      if (this.#panels.has(key)) {
+        // Already running — restart the loop so reloaded colours take effect.
+        this.#startPanel(this.#panels.get(key));
+        continue;
+      }
+
+      const device = this.#devices.get(key);
+      if (!device) continue;
+
+      const panel = new MatrixPanel(
+        { host: device.host, port: device.port },
+        { log: this.#log, ...this.#matrixOptions }
+      );
+      this.#panels.set(key, panel);
+      panel
+        .open()
+        .then(() => {
+          // Guard against a teardown that happened while we were connecting.
+          if (this.#panels.get(key) !== panel) return void panel.close();
+          // Stop the scene path touching this light, including any write still
+          // sitting in its coalescing window.
+          device.suspend();
+          this.#startPanel(panel);
+          this.#log(`drawing hearts on ${device.label}`);
+        })
+        .catch((error) => {
+          this.#log(`could not drive ${device.label} as a panel: ${error.message}`);
+          this.#panels.delete(key);
+          device.resume();
+          this.refresh();
+        });
+    }
+  }
+
+  /** Points a panel's loop at the live hearts and the current palette. */
+  #startPanel(panel) {
+    panel.start(() => (this.#hearts.length > 0 ? this.#hearts : idleHearts()), {
+      scenes: this.#config.scenes,
+      brightnessScale: this.#config.brightnessScale
+    });
   }
 
   /**
@@ -227,6 +323,8 @@ export class YeelightController {
 
     const slots = this.#heartSlots();
     for (const [key, device] of this.#devices) {
+      // A panel being animated frame by frame must not also be sent scenes.
+      if (this.#panels.has(key)) continue;
       device.setScene(this.#sceneForDevice(device, projects, slots.get(key)));
     }
 
@@ -265,6 +363,8 @@ export class YeelightController {
     if (!previous.enabled && config.enabled) this.#log('sync enabled');
     if (previous.enabled && !config.enabled) this.#log('sync disabled; lights going idle');
 
+    // Starts, stops, or re-points the frame loops to match the reloaded config.
+    this.#syncPanels();
     this.refresh();
   }
 
@@ -287,9 +387,20 @@ export class YeelightController {
     };
   }
 
-  stop() {
+  /**
+   * Async because a panel has to be blanked before its sockets close, and
+   * getting a blank frame past the request quota takes a few seconds. Skipping
+   * that would leave the panel frozen on its last frame, which looks like a
+   * crash rather than a clean stop.
+   */
+  async stop() {
     if (this.#tick) clearInterval(this.#tick);
     this.#tick = null;
+
+    const panels = [...this.#panels.values()];
+    this.#panels.clear();
+    await Promise.allSettled(panels.map((panel) => panel.close()));
+
     for (const device of this.#devices.values()) device.close();
     this.#devices.clear();
   }

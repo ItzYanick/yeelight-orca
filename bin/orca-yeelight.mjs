@@ -66,7 +66,7 @@ async function withController(fn, { discover = true } = {}) {
         '  • Make sure this machine is on the same subnet (guest Wi-Fi will not work).\n' +
         '  • If multicast is blocked, add the IPs to "devices" in ~/.orca/yeelight.json.\n'
     );
-    controller.stop();
+    await controller.stop();
     process.exitCode = 1;
     return;
   }
@@ -76,7 +76,7 @@ async function withController(fn, { discover = true } = {}) {
   } finally {
     // Give the coalesced writes time to reach the wire before tearing down.
     await new Promise((resolve) => setTimeout(resolve, 1200));
-    controller.stop();
+    await controller.stop();
   }
 }
 

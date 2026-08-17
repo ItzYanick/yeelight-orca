@@ -121,15 +121,26 @@ export class MatrixPanel {
   #sent = 0;
   #rejected = 0;
 
+  #blankAttempts;
+  #blankSpacingMs;
+
   constructor(
     { host, port = YEELIGHT_CONTROL_PORT },
-    { log = () => {}, fps = DEFAULT_FPS, poolSize = DEFAULT_POOL_SIZE } = {}
+    {
+      log = () => {},
+      fps = DEFAULT_FPS,
+      poolSize = DEFAULT_POOL_SIZE,
+      blankAttempts = 6,
+      blankSpacingMs = 1100
+    } = {}
   ) {
     this.#host = host;
     this.#port = port;
     this.#log = log;
     this.#fps = Math.min(12, Math.max(1, fps));
     this.#poolSize = Math.min(8, Math.max(1, poolSize));
+    this.#blankAttempts = Math.max(1, blankAttempts);
+    this.#blankSpacingMs = Math.max(0, blankSpacingMs);
   }
 
   get stats() {
@@ -233,7 +244,7 @@ export class MatrixPanel {
    * Worth the few seconds: a panel left holding its last frame looks like a
    * crashed display rather than a stopped one.
    */
-  async blankAndFlush({ attempts = 6, spacingMs = 1100 } = {}) {
+  async blankAndFlush({ attempts = this.#blankAttempts, spacingMs = this.#blankSpacingMs } = {}) {
     for (let n = 0; n < attempts; n += 1) {
       try {
         this.blank();

@@ -185,6 +185,35 @@ come from those scenes.
 node bin/orca-yeelight.mjs hearts   # preview: busy, waiting, then all idle
 ```
 
+### On a matrix panel
+
+If one of your lights is a **Cube Lite** (or another matrix panel), hearts mode
+stops being a metaphor and draws three actual hearts on it — one per agent, side
+by side, each rippling from its own centre outward.
+
+Detection is automatic. `support` is empty on these models so nothing can be
+feature-detected the normal way; instead each light is asked whether it accepts
+`activate_fx_mode {"mode":"direct"}`. A panel says yes, a bulb does not, and
+bulbs keep the colour-flow behaviour above unchanged.
+
+```bash
+node bin/orca-yeelight.mjs panel   # three animated hearts, 60 seconds
+```
+
+Two things are worth knowing before you rely on it:
+
+- **A panel only animates while Orca is running.** Its LAN protocol has exactly
+  one effect mode, `direct`, which means the host draws every frame. There is no
+  way to hand it an animation and walk away — the effects the Yeelight app
+  leaves behind are pushed through the cloud, not through anything reachable
+  here. When the plugin stops it blanks the panel rather than leaving it frozen
+  mid-ripple.
+- **The animation is deliberately slow.** The firmware enforces a request quota
+  per connection, so frames are spread over a pool of eight and still only reach
+  about 8 fps. Smoothness therefore depends on how far a pixel moves between
+  frames, which is why the ripple periods are measured in whole seconds. Making
+  them faster brings the stepping back; there is a test that says so.
+
 ## Multiple projects
 
 When agents are running in more than one worktree, a single light can still show
@@ -228,6 +257,7 @@ node bin/orca-yeelight.mjs effect rainbow    # preview one effect
 node bin/orca-yeelight.mjs effect pulse '#ff0000'
 node bin/orca-yeelight.mjs projects 3        # preview the multi-project cycle
 node bin/orca-yeelight.mjs hearts            # preview hearts mode
+node bin/orca-yeelight.mjs panel             # three hearts on a matrix panel
 node bin/orca-yeelight.mjs props         # read live device properties
 node bin/orca-yeelight.mjs off
 ```
@@ -263,6 +293,7 @@ AgentStatusTracker ──► group by project ──► one status per project
   (per-pane table)     (worktreeId is           │
    prune stale          <repoId>::<path>)       ▼
                                      ┌── assigned light? ── that project's scene
+                                     ├── hearts + matrix panel? ── heart sprites
                                      ├── hearts mode? ── one heart per agent
                                      ├── multiProject cycle? ── one colour each
                                      └── otherwise ── the most urgent status
@@ -283,6 +314,8 @@ therefore a static reference rather than a live dashboard.
 | --- | --- |
 | `src/protocol.mjs` | wire format, colour maths, scene → commands (pure) |
 | `src/scene.mjs` | status tracking and status → scene (pure) |
+| `src/matrix.mjs` | hearts → one panel frame, sprites and ripple (pure) |
+| `src/matrix-driver.mjs` | direct mode, the connection pool, the frame loop |
 | `src/discovery.mjs` | SSDP scan on UDP 1982 |
 | `src/device.mjs` | one device: connection, reconnect, rate limit |
 | `src/controller.mjs` | device set + status → light, shared with the CLI |
@@ -295,7 +328,7 @@ therefore a static reference rather than a live dashboard.
 npm test
 ```
 
-92 tests. The protocol and scene layers are pure and tested directly; the
+120 tests. The protocol and scene layers are pure and tested directly; the
 integration suite drives the real `activate()` entry point against a fake bulb
 that speaks the actual protocol, asserting on the commands a device would
 receive — including a regression test for firmware that ignores `get_prop`.

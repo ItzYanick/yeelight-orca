@@ -445,3 +445,118 @@ describe('plugin activate()', () => {
     assert.ok(scenesAfter.length >= 1);
   });
 });
+
+describe('hearts on a matrix panel', () => {
+  /**
+   * The whole panel path, end to end: the fake bulb acknowledges every command,
+   * so it probes as a matrix, and the controller must then drive it with frames
+   * instead of scenes.
+   *
+   * The two halves matter equally. Frames arriving proves the loop runs; no
+   * `set_scene` arriving proves the two paths are not fighting each other —
+   * a scene would knock the panel out of direct mode mid-animation.
+   */
+  it('drives a panel with frames and stops sending it scenes', async () => {
+    const bulb = await startFakeBulb();
+
+    const { YeelightController } = await import('../src/controller.mjs');
+    const { normalizeConfig } = await import('../src/config.mjs');
+    const { MATRIX_LEDS } = await import('../src/matrix.mjs');
+
+    const { config } = normalizeConfig({
+      autoDiscover: false,
+      hearts: true,
+      devices: [{ host: '127.0.0.1', port: bulb.port, name: 'panel' }]
+    });
+
+    const controller = new YeelightController(config, {
+      log: () => {},
+      // Small and fast so the test does not pay for the real blanking schedule.
+      matrix: { poolSize: 2, fps: 10, blankAttempts: 1, blankSpacingMs: 20 }
+    });
+
+    try {
+      await controller.start();
+      controller.handleAgentStatus({
+        paneKey: 'p1',
+        state: 'working',
+        worktreeId: 'r1::/w/alpha',
+        receivedAt: Date.now()
+      });
+      await settle(1500);
+
+      const direct = bulb.received.filter(
+        (message) => message.method === 'activate_fx_mode' && message.params?.[0]?.mode === 'direct'
+      );
+      assert.ok(direct.length > 0, 'the panel must be put into direct mode');
+
+      const frames = bulb.received.filter((message) => message.method === 'update_leds');
+      assert.ok(frames.length >= 3, `expected a stream of frames, got ${frames.length}`);
+
+      // Every frame is a full panel of three bytes per LED.
+      for (const frame of frames) {
+        assert.equal(Buffer.from(frame.params[0], 'base64').length, MATRIX_LEDS * 3);
+      }
+
+      // Frames must differ over time, or nothing is actually animating.
+      const distinct = new Set(frames.map((frame) => frame.params[0]));
+      assert.ok(distinct.size > 1, 'frames should change over time');
+
+      // Once the loop owns the light, scenes must stop.
+      const sceneAfterFirstFrame = bulb.received
+        .slice(bulb.received.findIndex((message) => message.method === 'update_leds'))
+        .filter((message) => message.method === 'set_scene');
+      assert.deepEqual(sceneAfterFirstFrame, [], 'a driven panel must not also be sent scenes');
+    } finally {
+      await controller.stop();
+      await bulb.close();
+    }
+  });
+
+  /** Turning hearts off must hand the light back to the ordinary scene path. */
+  it('releases the panel when hearts mode is switched off', async () => {
+    const bulb = await startFakeBulb();
+
+    const { YeelightController } = await import('../src/controller.mjs');
+    const { normalizeConfig } = await import('../src/config.mjs');
+
+    const { config } = normalizeConfig({
+      autoDiscover: false,
+      hearts: true,
+      devices: [{ host: '127.0.0.1', port: bulb.port, name: 'panel' }]
+    });
+
+    const controller = new YeelightController(config, {
+      log: () => {},
+      matrix: { poolSize: 2, fps: 10, blankAttempts: 1, blankSpacingMs: 20 }
+    });
+
+    try {
+      await controller.start();
+      await settle(1200);
+      assert.ok(bulb.received.some((message) => message.method === 'update_leds'), 'frames should start');
+
+      controller.updateConfig({ ...controller.config, hearts: false });
+      await settle(1200);
+      const framesAtSwitch = bulb.received.filter((message) => message.method === 'update_leds').length;
+
+      controller.handleAgentStatus({
+        paneKey: 'p1',
+        state: 'blocked',
+        worktreeId: 'r1::/w/alpha',
+        receivedAt: Date.now()
+      });
+      await settle(900);
+
+      const framesNow = bulb.received.filter((message) => message.method === 'update_leds').length;
+      assert.equal(framesNow, framesAtSwitch, 'the frame loop must stop');
+      assert.ok(
+        bulb.received.some((message) => message.method === 'set_scene'),
+        'the light should be back on the ordinary scene path'
+      );
+    } finally {
+      await controller.stop();
+      await bulb.close();
+    }
+  });
+});

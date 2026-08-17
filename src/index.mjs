@@ -174,9 +174,11 @@ export default async function activate(context) {
     }
   });
 
-  context.__teardown = () => {
+  // Awaited so panels get blanked before their sockets close; a panel left
+  // holding its last frame reads as a crash rather than a clean shutdown.
+  context.__teardown = async () => {
     stopWatching();
-    controller.stop();
+    await controller.stop();
   };
 
   globalThis.__orcaYeelightTeardown = context.__teardown;

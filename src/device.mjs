@@ -38,6 +38,8 @@ export class YeelightDevice {
 
   #writeTimer = null;
   #flushing = false;
+  /** True while a matrix frame loop owns this light. */
+  #suspended = false;
   #desiredScene = null;
   #appliedFingerprint = null;
   #writeBudget = [];
@@ -190,8 +192,35 @@ export class YeelightDevice {
    * on the next tick of the write timer.
    */
   setScene(scene) {
+    if (this.#suspended) return;
     this.#desiredScene = scene;
     this.#scheduleWrite();
+  }
+
+  /**
+   * Hands this light over to something else — currently the matrix frame loop,
+   * which drives a panel pixel by pixel in direct mode.
+   *
+   * Ignoring later scenes is not enough on its own: a scene requested moments
+   * earlier is still sitting in the coalescing window, and letting it land
+   * would knock the panel out of direct mode after the frames had started. So
+   * the pending write is dropped too.
+   */
+  suspend() {
+    this.#suspended = true;
+    if (this.#writeTimer) clearTimeout(this.#writeTimer);
+    this.#writeTimer = null;
+    this.#desiredScene = null;
+  }
+
+  /**
+   * Takes the light back. The remembered fingerprint is cleared because whoever
+   * held it has been drawing something else, so the next scene must be written
+   * even if it matches what this device last applied itself.
+   */
+  resume() {
+    this.#suspended = false;
+    this.#appliedFingerprint = null;
   }
 
   #scheduleWrite() {
