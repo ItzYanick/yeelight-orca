@@ -216,20 +216,37 @@ export class MatrixPanel {
     this.#timer = null;
   }
 
-  /** Blanks the panel — otherwise it holds the last frame indefinitely. */
+  /** Queues one blank frame. Prefer `blankAndFlush` when shutting down. */
   blank() {
     this.push(blankPayload());
   }
 
-  close({ blank = true } = {}) {
-    this.stop();
-    if (blank) {
+  /**
+   * Blanks the panel and waits for it to actually take effect.
+   *
+   * Two things make the naive version fail, and both were observed: a single
+   * blank arriving right after a burst is refused by the quota, and destroying
+   * a socket immediately after writing discards the unflushed frame. So this
+   * pushes several times, spaced widely enough that at least one lands on a
+   * socket with budget left, and returns only once they have gone out.
+   *
+   * Worth the few seconds: a panel left holding its last frame looks like a
+   * crashed display rather than a stopped one.
+   */
+  async blankAndFlush({ attempts = 6, spacingMs = 1100 } = {}) {
+    for (let n = 0; n < attempts; n += 1) {
       try {
         this.blank();
       } catch {
-        // Closing anyway.
+        // Nothing to do but keep trying the remaining attempts.
       }
+      await new Promise((resolve) => setTimeout(resolve, spacingMs));
     }
+  }
+
+  async close({ blank = true } = {}) {
+    this.stop();
+    if (blank && this.#pool.length > 0) await this.blankAndFlush();
     for (const socket of this.#pool) socket.destroy();
     this.#pool = [];
     this.#control?.destroy();

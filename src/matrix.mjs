@@ -64,14 +64,32 @@ export const HEART_ORIGINS = [1, 8, 15];
  */
 export const RIPPLE_ORIGIN = { x: 2, y: 2 };
 
-/** Per-state look. Colours come from the configured scenes; motion does not. */
+/**
+ * Per-state motion. Colours come from the configured scenes; this does not.
+ *
+ * These periods look absurdly slow written down, and they are the result of
+ * watching the real panel. The constraint is that a matrix can only be driven
+ * at about 8 fps before the firmware's request quota starts refusing frames, so
+ * smoothness is not set by the frame rate but by **how much a pixel changes
+ * between consecutive frames**. A 2.4s ripple at 8 fps moves ~13% of the
+ * brightness range per frame, which the eye reads as stepping, not motion.
+ *
+ * Both levers here shrink that delta: a longer period spreads the cycle over
+ * more frames, and a higher floor (a shallower dip) reduces the range being
+ * traversed. At these values the worst-case per-frame change is:
+ *
+ *   working    9000ms  72 frames/cycle   2.4%
+ *   attention  5000ms  40 frames/cycle   5.3%
+ *   idle      12000ms  96 frames/cycle   1.6%
+ *
+ * `attention` is deliberately the twitchiest of the three — it is the one state
+ * meant to catch your eye, and its faster, deeper ripple is what distinguishes
+ * it from `working` across the room.
+ */
 export const HEART_MOTION = {
-  // Working: a calm, slow swell.
-  working: { periodMs: 2400, spread: 1.5, floor: 0.18 },
-  // Wants you: twice the rate and a deeper trough, so it reads as urgent.
-  attention: { periodMs: 1150, spread: 1.7, floor: 0.1 },
-  // Idle: slowest of the three, and the hue rotates rather than a colour pulsing.
-  idle: { periodMs: 3600, spread: 1.2, floor: 0.25 }
+  working: { periodMs: 9000, spread: 0.9, floor: 0.45 },
+  attention: { periodMs: 5000, spread: 1.0, floor: 0.32 },
+  idle: { periodMs: 12_000, spread: 0.7, floor: 0.5 }
 };
 
 /** Hue degrees swept per second by an idle heart's rainbow. */

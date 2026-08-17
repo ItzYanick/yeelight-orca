@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { DEFAULT_FPS } from '../src/matrix-driver.mjs';
 import { DEFAULT_SCENES, idleHearts } from '../src/scene.mjs';
 import {
   HEART_MOTION,
@@ -128,6 +129,26 @@ describe('ripple', () => {
   it('pulses attention faster than working, and idle slowest of all', () => {
     assert.ok(HEART_MOTION.attention.periodMs < HEART_MOTION.working.periodMs);
     assert.ok(HEART_MOTION.idle.periodMs > HEART_MOTION.working.periodMs);
+  });
+
+  /**
+   * The panel tops out near 8 fps, so smoothness is governed by how far a pixel
+   * moves between frames rather than by the frame rate. Anything past ~6% of
+   * the brightness range per frame was visibly stepping on real hardware.
+   */
+  it('never moves a pixel far enough between frames to look stepped', () => {
+    for (const [state, motion] of Object.entries(HEART_MOTION)) {
+      const framesPerCycle = (motion.periodMs / 1000) * DEFAULT_FPS;
+      const amplitude = 1 - motion.floor;
+      // Steepest point of a sine, per frame.
+      const maxDelta = (amplitude * Math.PI) / framesPerCycle;
+      assert.ok(
+        maxDelta <= 0.06,
+        `${state} changes ${(maxDelta * 100).toFixed(1)}% per frame at ${DEFAULT_FPS} fps; ` +
+          'slow the period or raise the floor'
+      );
+      assert.ok(framesPerCycle >= 30, `${state} has only ${framesPerCycle} frames per cycle`);
+    }
   });
 });
 

@@ -262,15 +262,19 @@ async function main(argv) {
     log('Three hearts: blue (working), yellow (wants you), rainbow (idle).');
     log('The ripple starts at each heart\'s centre and travels outward. Ctrl-C to stop.');
 
-    const finish = () => {
+    let finishing = false;
+    const finish = async () => {
+      if (finishing) return;
+      finishing = true;
       const { sent, rejected } = panel.stats;
       log(`\n${sent} frames sent, ${rejected} rejected by the device's quota.`);
-      panel.close();
+      log('Blanking the panel — this takes a few seconds to get past the quota.');
+      await panel.close();
       process.exit(0);
     };
-    process.on('SIGINT', finish);
+    process.on('SIGINT', () => void finish());
     await new Promise((resolve) => setTimeout(resolve, 60_000));
-    finish();
+    await finish();
     return;
   }
 
