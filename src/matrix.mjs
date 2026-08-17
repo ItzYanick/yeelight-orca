@@ -81,6 +81,13 @@ export const RIPPLE_ORIGIN = { x: 2, y: 2 };
  *   working    9000ms  36 frames/cycle   4.8%
  *   attention  6000ms  24 frames/cycle   5.9%
  *
+ * `spread` is a separate matter and costs nothing: it sets how far the phase
+ * shifts per pixel, so it controls whether the wave is *seen to travel* rather
+ * than how fast a pixel changes. It was far too low at first — barely a third
+ * of a cycle across the whole sprite — which made a heart breathe uniformly
+ * instead of rippling, and read as no animation at all once the idle hearts
+ * stopped moving and there was nothing else on the panel to compare against.
+ *
  * `attention` stays the more urgent of the two by being half again as fast.
  * It used to get there by dipping deeper as well, but a deep dip needs frames
  * to cross smoothly and there are no longer enough of them — so its floor is
@@ -88,9 +95,27 @@ export const RIPPLE_ORIGIN = { x: 2, y: 2 };
  * brighter still reads as "answer me" next to working's slow swell.
  */
 export const HEART_MOTION = {
-  working: { periodMs: 9000, spread: 0.9, floor: 0.45 },
-  attention: { periodMs: 6000, spread: 1.0, floor: 0.55 }
+  working: { periodMs: 12_000, spread: 2.0, floor: 0.42 },
+  attention: { periodMs: 8000, spread: 2.2, floor: 0.55 }
 };
+
+/**
+ * Perceived brightness is not proportional to LED output.
+ *
+ * Halving a channel does not look half as bright — the eye follows roughly a
+ * 2.2 power curve, so a dip to 40% output reads as about 66%. Scaling channels
+ * directly therefore threw away most of the ripple's contrast and it was barely
+ * visible on the panel even at full spread. Raising the scale by gamma before
+ * it reaches the channels means a ripple that says 40% actually looks like 40%,
+ * and equal steps in the ripple become equal *perceived* steps — which is also
+ * what the smoothness budget is really measured in.
+ */
+const GAMMA = 2.2;
+
+/** Ripple scale (perceptual) to channel multiplier (linear). */
+export function perceptualScale(scale) {
+  return Math.min(1, Math.max(0, scale)) ** GAMMA;
+}
 
 /**
  * An idle heart does not move at all.
@@ -99,7 +124,7 @@ export const HEART_MOTION = {
  * heart standing for nothing must be still. That also makes the panel legible
  * from the corner of your eye: any movement at all means a worktree is live.
  */
-export const IDLE_BRIGHTNESS = 0.8;
+export const IDLE_BRIGHTNESS = 0.9;
 
 function clampChannel(value) {
   return Math.min(255, Math.max(0, Math.round(value)));
@@ -182,10 +207,10 @@ export function heartPixel(state, elapsedMs, x, y, scenes = DEFAULT_SCENES, rain
   if (!motion) {
     const { start = 0, width = SPRITE_SIZE, globalX = x } = rainbow ?? {};
     const position = width <= 0 ? 0 : (globalX - start) / width;
-    return hsvToRgb(position * 360, 1, IDLE_BRIGHTNESS);
+    return hsvToRgb(position * 360, 1, perceptualScale(IDLE_BRIGHTNESS));
   }
 
-  const scale = rippleAt(elapsedMs, x, y, motion);
+  const scale = perceptualScale(rippleAt(elapsedMs, x, y, motion));
   const definition =
     state === 'attention'
       ? (scenes?.waiting ?? DEFAULT_SCENES.waiting)

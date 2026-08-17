@@ -39,12 +39,17 @@ import { blankPayload, renderHeartsPayload } from './matrix.mjs';
  *
  * So the limit that matters is not how many frames the device will accept in a
  * burst; it is how much connection churn it will tolerate for hours. These
- * defaults are deliberately well inside that: four sockets, four frames a
- * second. The ripple was tuned to stay smooth at low frame rates anyway, and a
- * still panel sends almost nothing because unchanged frames are skipped.
+ * defaults are deliberately well inside that: five sockets at three frames a
+ * second is 0.6 frames per socket per second, which is the rate measured to
+ * draw no rejections at all. Four sockets at four frames ran at 1.0/s each,
+ * which looked fine for thirty seconds and then stalled outright as the
+ * buckets drained — the animation visibly froze part way through a minute.
+ *
+ * The ripple was tuned to stay smooth at low frame rates anyway, and a still
+ * panel sends almost nothing because unchanged frames are skipped.
  */
-export const DEFAULT_POOL_SIZE = 4;
-export const DEFAULT_FPS = 4;
+export const DEFAULT_POOL_SIZE = 5;
+export const DEFAULT_FPS = 3;
 
 const CONNECT_TIMEOUT_MS = 5000;
 /**
@@ -292,14 +297,25 @@ export class MatrixPanel {
    * crashed display rather than a stopped one.
    */
   async blankAndFlush({ attempts = this.#blankAttempts, spacingMs = this.#blankSpacingMs } = {}) {
+    const payload = blankPayload();
+
+    // Shutting down follows a long run at the frame rate, so every socket's
+    // budget is spent and the first blanks would simply be refused — leaving
+    // the panel lit on whatever it happened to be showing. Pausing first buys
+    // back some budget, and each attempt then goes out on *every* socket,
+    // because the quota is per connection and only one of them has to land.
+    await new Promise((resolve) => setTimeout(resolve, spacingMs));
+
     for (let n = 0; n < attempts; n += 1) {
-      try {
-        this.blank();
-      } catch {
-        // Nothing to do but keep trying the remaining attempts.
+      for (const socket of this.#pool) {
+        if (!socket.destroyed) this.#send(socket, 'update_leds', [payload]);
       }
+      this.#sent += 1;
       await new Promise((resolve) => setTimeout(resolve, spacingMs));
     }
+
+    // Anything drawn after this must be written even if it looks unchanged.
+    this.#lastPayload = null;
   }
 
   async close({ blank = true } = {}) {
